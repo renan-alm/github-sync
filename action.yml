@@ -26,6 +26,9 @@ inputs:
   sync_all_branches:
     description: Sync all branches from source repo (true/false)
     required: false
+  use_main_as_fallback:
+    description: If specified branch not found, try main or master as fallback (true/false)
+    required: false
   github_app_id:
     description: GitHub App ID (required if not using github_token)
     required: false

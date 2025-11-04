@@ -21,6 +21,7 @@ function readInputs() {
     syncTags: core.getInput("sync_tags"),
     sourceToken: core.getInput("source_token"),
     syncAllBranches: core.getInput("sync_all_branches") === "true",
+    useMainAsFallback: core.getInput("use_main_as_fallback") === "true",
     githubAppId: core.getInput("github_app_id"),
     githubAppPrivateKey: core.getInput("github_app_private_key"),
     githubAppInstallationId: core.getInput("github_app_installation_id"),
@@ -203,7 +204,53 @@ async function getSourceBranches() {
   return branchNames;
 }
 
-async function syncBranches(sourceBranch, destinationBranch, syncAllBranches) {
+/**
+ * Helper: Get the default branch from source remote
+ */
+async function getDefaultBranch() {
+  let stdout = "";
+  try {
+    await exec.exec("git", ["symbolic-ref", "refs/remotes/source/HEAD"], {
+      listeners: {
+        stdout: (data) => {
+          stdout += data.toString();
+        },
+      },
+    });
+  } catch (error) {
+    core.warning(`Could not determine default branch: ${error.message}`);
+    return null;
+  }
+
+  // Output format: "ref: refs/remotes/source/master"
+  const match = stdout.match(/refs\/remotes\/source\/(.+)$/);
+  if (match && match[1]) {
+    const defaultBranch = match[1].trim();
+    core.info(`Default branch detected: ${defaultBranch}`);
+    return defaultBranch;
+  }
+
+  return null;
+}
+
+/**
+ * Helper: Try to find a fallback branch (main or master)
+ */
+async function getTryFallbackBranch(availableBranches) {
+  // Try main first, then master
+  const fallbackOptions = ["main", "master"];
+  
+  for (const branch of fallbackOptions) {
+    if (availableBranches.includes(branch)) {
+      core.info(`Found fallback branch: ${branch}`);
+      return branch;
+    }
+  }
+  
+  return null;
+}
+
+async function syncBranches(sourceBranch, destinationBranch, syncAllBranches, useMainAsFallback) {
   if (syncAllBranches) {
     core.info("=== Syncing All Branches ===");
 
@@ -225,21 +272,36 @@ async function syncBranches(sourceBranch, destinationBranch, syncAllBranches) {
     
     // Check available branches first
     const availableBranches = await getSourceBranches();
+    let actualSourceBranch = sourceBranch;
     
     if (!availableBranches.includes(sourceBranch)) {
-      throw new Error(
-        `Branch "${sourceBranch}" not found in source repository. Available branches: ${availableBranches.join(", ") || "none"}`
-      );
+      if (useMainAsFallback) {
+        core.warning(`Branch "${sourceBranch}" not found. Trying main or master...`);
+        const fallbackBranch = await getTryFallbackBranch(availableBranches);
+        
+        if (fallbackBranch) {
+          actualSourceBranch = fallbackBranch;
+          core.info(`✓ Using fallback branch: ${fallbackBranch}`);
+        } else {
+          throw new Error(
+            `Branch "${sourceBranch}" not found, and no fallback (main/master) available. Available branches: ${availableBranches.join(", ") || "none"}`
+          );
+        }
+      } else {
+        throw new Error(
+          `Branch "${sourceBranch}" not found in source repository. Available branches: ${availableBranches.join(", ") || "none"}`
+        );
+      }
     }
 
-    core.info(`Syncing branch: ${sourceBranch} → ${destinationBranch}`);
+    core.info(`Syncing branch: ${actualSourceBranch} → ${destinationBranch}`);
     await exec.exec("git", [
       "push",
       "origin",
-      `refs/remotes/source/${sourceBranch}:refs/heads/${destinationBranch}`,
+      `refs/remotes/source/${actualSourceBranch}:refs/heads/${destinationBranch}`,
       "--force",
     ]);
-    core.info(`✓ Branch synced: ${sourceBranch} → ${destinationBranch}`);
+    core.info(`✓ Branch synced: ${actualSourceBranch} → ${destinationBranch}`);
   }
 }
 
@@ -319,6 +381,7 @@ async function run() {
       inputs.sourceBranch,
       inputs.destinationBranch,
       inputs.syncAllBranches,
+      inputs.useMainAsFallback,
     );
 
     await syncTags(inputs.syncTags);
