@@ -68,7 +68,6 @@ async function run() {
     
     // Disable interactive prompts for HTTPS operations
     await git.addConfig("core.askPass", "echo");
-    await git.addConfig("GIT_TERMINAL_PROMPT", "0");
     
     // Handle credentials by embedding in URLs for HTTPS
     // This is more reliable than environment variables with simple-git
