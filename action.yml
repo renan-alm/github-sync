@@ -23,9 +23,3 @@ inputs:
 runs:
   using: "node20"
   main: "index.js"
-  env:
-    GITHUB_TOKEN: ${{ inputs.github_token }}
-    SYNC_TAGS: ${{ inputs.sync_tags }}
-  args:
-    - ${{ inputs.source_repo }}
-    - ${{ inputs.source_branch }}:${{ inputs.destination_branch }}
