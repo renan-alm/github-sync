@@ -1,13 +1,14 @@
 # GitHub Sync
 
-A GitHub Action for syncing repositories using **force push** with GitHub App authentication.
+A GitHub Action for syncing repositories across different SCM providers using **force push**. Supports GitHub, GitLab, Gitea, and other Git-based platforms.
 
 ## Features
 
-- Sync branches between two GitHub repositories
+- Sync branches between two repositories on any Git-based SCM platform
 - Sync specific branches or all branches from a source repository
-- GitHub App-based authentication for secure token management
+- Support for both PAT (Personal Access Token) and GitHub App authentication
 - Support syncing tags (all or by regex pattern)
+- Works with HTTPS and SSH URLs
 - Can be triggered on a timer or on push events
 
 ## Usage
@@ -87,12 +88,16 @@ jobs:
 
 ### Input Parameters
 
-- `source_repo` (required): Source repository HTTPS URL
+- `source_repo` (required): Full repository URL (supports GitHub, GitLab, Gitea, etc.). Examples:
+  - GitHub: `https://github.com/owner/repo.git`
+  - GitLab: `https://gitlab.com/owner/repo.git`
+  - Gitea: `https://gitea.example.com/owner/repo.git`
+  - SSH: `git@github.com:owner/repo.git`
 - `source_branch` (required): Branch name to sync from
-- `destination_repo` (required): Destination repository HTTPS URL
+- `destination_repo` (required): Full repository URL for the destination repository
 - `destination_branch` (required): Branch name to sync to
 - `sync_tags` (optional): `true` to sync all tags, regex pattern to sync matching tags, or omit to skip
-- `source_token` (optional): Access token for private source repos
+- `source_token` (optional): Access token for private source repos (required for private HTTPS repos without embedded credentials)
 - `sync_all_branches` (optional): `true` to sync all branches from source repo
 
 **Authentication (provide one of the following):**
@@ -102,7 +107,7 @@ jobs:
 - `github_app_private_key` (optional): GitHub App private key
 - `github_app_installation_id` (optional): GitHub App installation ID
 
-> **Note**: Either `github_token` OR all three GitHub App parameters must be provided.
+> **Note**: Either `github_token` OR all three GitHub App parameters must be provided for HTTPS authentication. SSH URLs do not require tokens if SSH keys are configured.
 
 ### Workflow Considerations
 

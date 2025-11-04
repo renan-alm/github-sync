@@ -64,35 +64,52 @@ async function run() {
     await git.addConfig("user.name", "github-sync-action");
     await git.addConfig("user.email", "github-sync@github.com");
     
-    // Use git credential storage approach - embed token in URL
-    // This is the most reliable way to pass credentials to git
-    if (destinationToken) {
+    // Handle credentials only for HTTPS URLs
+    // Pass tokens via environment variables for better compatibility across different SCM providers
+    const gitEnv = { ...process.env };
+    
+    if (destinationToken && dstUrl.startsWith("https://")) {
+      // Set GIT_ASKPASS to handle HTTPS authentication without interactive prompt
+      gitEnv.GIT_ASKPASS = "echo";
+      gitEnv.GIT_ASKPASS_REQUIRE = "force";
+      // Try both common patterns for token-based auth
+      gitEnv.GIT_PASSWORD = destinationToken;
+      
+      // Also try embedding in URL as fallback for HTTPS
       try {
         const destUrl = new URL(dstUrl);
         destUrl.username = "x-access-token";
         destUrl.password = destinationToken;
         dstUrl = destUrl.toString();
-      } catch {
-        // If URL parsing fails, try simple string replacement
-        dstUrl = dstUrl.replace("https://", `https://x-access-token:${destinationToken}@`);
+      } catch (error) {
+        core.debug(`Could not parse destination URL: ${error.message}`);
       }
     }
     
-    if (sourceToken) {
+    if (sourceToken && srcUrl.startsWith("https://")) {
+      // Set environment for source repo if it needs different credentials
+      if (sourceToken !== destinationToken) {
+        gitEnv.GIT_PASSWORD = sourceToken;
+      }
+      
       try {
         const srcUrlObj = new URL(srcUrl);
         srcUrlObj.username = "x-access-token";
         srcUrlObj.password = sourceToken;
         srcUrl = srcUrlObj.toString();
-      } catch {
-        // If URL parsing fails, try simple string replacement
-        srcUrl = srcUrl.replace("https://", `https://x-access-token:${sourceToken}@`);
+      } catch (error) {
+        core.debug(`Could not parse source URL: ${error.message}`);
       }
     }
     
-    await git.clone(dstUrl, "repo");
+    // Clone with appropriate environment
+    const gitOptions = destinationToken && dstUrl.startsWith("https://") 
+      ? { env: gitEnv }
+      : {};
+    
+    await git.clone(dstUrl, "repo", gitOptions);
 
-    const repo = simpleGit("repo");
+    const repo = simpleGit("repo", gitOptions);
 
     // Add source as remote (if not already)
     const remotes = await repo.getRemotes(true);
