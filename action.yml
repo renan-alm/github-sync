@@ -11,21 +11,36 @@ inputs:
   source_branch:
     description: Branch name to sync from
     required: true
+  destination_repo:
+    description: Destination repo full https clone url
+    required: true
   destination_branch:
     description: Branch name to sync to in this repo
     required: true
-  github_token:
-    description: GitHub token secret
-    required: true
   sync_tags:
-    description: Should tags also be synced
+    description: Should tags also be synced (true/false or regex pattern)
+    required: false
+  source_token:
+    description: Optional token for accessing source repo
+    required: false
+  sync_all_branches:
+    description: Sync all branches from source repo (true/false)
+    required: false
+  use_main_as_fallback:
+    description: If specified branch not found, try main or master as fallback (default true)
+    required: false
+  github_app_id:
+    description: GitHub App ID (required if not using github_token)
+    required: false
+  github_app_private_key:
+    description: GitHub App private key (required if not using github_token)
+    required: false
+  github_app_installation_id:
+    description: GitHub App installation ID (required if not using github_token)
+    required: false
+  github_token:
+    description: GitHub Personal Access Token (required if not using GitHub App)
     required: false
 runs:
   using: "node20"
   main: "index.js"
-  env:
-    GITHUB_TOKEN: ${{ inputs.github_token }}
-    SYNC_TAGS: ${{ inputs.sync_tags }}
-  args:
-    - ${{ inputs.source_repo }}
-    - ${{ inputs.source_branch }}:${{ inputs.destination_branch }}
