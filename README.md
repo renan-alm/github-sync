@@ -4,25 +4,41 @@ A GitHub Action for syncing repositories across different SCM providers using **
 
 ## Features
 
-- Sync branches between two repositories on any Git-based SCM platform
-- Sync specific branches or all branches from a source repository
-- Support for both PAT (Personal Access Token) and GitHub App authentication
-- Support syncing tags (all or by regex pattern)
-- Works with HTTPS and SSH URLs
-- Can be triggered on a timer or on push events
+- ✅ Sync branches between any two Git-based repositories
+- ✅ Sync specific branches or all branches from a source repository
+- ✅ Automatic branch fallback (main → master) for missing branches
+- ✅ Support syncing tags (all tags, regex patterns, or disabled)
+- ✅ Dual authentication options:
+  - Personal Access Token (PAT)
+  - GitHub App installation token
+- ✅ Multi-SCM platform support (GitHub, GitLab, Gitea, etc.)
+- ✅ Works with HTTPS and SSH URLs
+- ✅ Force push for complete synchronization
+- ✅ Comprehensive logging and progress tracking
+- ✅ Can be triggered on a timer or on push events
 
-## Usage
+## How It Works
+
+The action performs the following steps:
+
+1. **Authentication**: Validates and obtains token via PAT or GitHub App
+2. **Git Configuration**: Sets up git user identity globally
+3. **URL Preparation**: Embeds authentication credentials in repository URLs for HTTPS repos
+4. **Destination Clone**: Clones the destination repository
+5. **Source Remote**: Adds source repository as remote and fetches all branches/tags
+6. **Branch Sync**: Syncs branches with force push (specific branch or all branches)
+7. **Tag Sync**: Syncs tags if enabled (all tags, pattern matching, or disabled)
 
 ### Prerequisites
 
 You can authenticate using either:
 
-**Option 1: GitHub Personal Access Token (PAT)**
+#### Option 1: GitHub Personal Access Token (PAT)
 
 - Create a Personal Access Token with repo access
 - Add it as a repository secret (e.g., `PAT`)
 
-**Option 2: GitHub App** (Recommended for security)
+#### Option 2: GitHub App (Recommended for security)
 
 - Create a GitHub App or use an existing one
 - Get your GitHub App ID, private key, and installation ID
@@ -132,6 +148,25 @@ If `destination_branch` is the same as the branch containing this workflow file,
 2. Make it the default branch in repository settings
 3. Place the workflow file on this branch
 
+#### What "Sync" Means
+
+This action performs a **complete mirror** of the specified branch(es) from source to destination using `git push --force`. This means:
+
+- **All commits** are copied exactly as they are in the source
+- **History is preserved** - nothing is rebased or squashed
+- **Files are overwritten** - if a file differs between repos, destination gets source's version
+- **Previous changes on destination** are lost if they conflict with source
+- **This is not a merge** - it's a complete replacement of the destination branch with source branch
+
+This is useful for:
+
+- Mirroring public repositories
+- Syncing configuration repositories
+- Keeping backup copies in sync
+- Cross-platform repository synchronization
+
+⚠️ **Note**: Use with caution on branches with important local-only content.
+
 ### Advanced Usage: Sync all branches
 
 To sync all branches from source to destination:
@@ -150,3 +185,73 @@ with:
 This will force sync ALL branches to match the source repo. Branches created only in the destination repo will not be affected, but all other branches will be hard reset to match the source repo.
 
 ⚠️ **Warning**: If the upstream source creates a branch that shares the name with your destination branch, your changes on that branch will be overwritten.
+
+## Examples
+
+### Example 1: Sync specific branch with PAT (default fallback enabled)
+
+```yaml
+- uses: renan-alm/github-sync@simple
+  with:
+    source_repo: "https://github.com/org/upstream-repo.git"
+    source_branch: "main"
+    destination_repo: "https://github.com/org/mirror-repo.git"
+    destination_branch: "main"
+    sync_tags: "true"
+    github_token: ${{ secrets.PAT }}
+```
+
+If `main` doesn't exist in source, automatically falls back to `master`.
+
+### Example 2: Sync all branches with GitHub App
+
+```yaml
+- uses: renan-alm/github-sync@simple
+  with:
+    source_repo: "https://github.com/org/upstream-repo.git"
+    destination_repo: "https://github.com/org/mirror-repo.git"
+    sync_all_branches: "true"
+    sync_tags: "true"
+    github_app_id: ${{ secrets.GITHUB_APP_ID }}
+    github_app_private_key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+    github_app_installation_id: ${{ secrets.GITHUB_APP_INSTALLATION_ID }}
+```
+
+### Example 3: Sync tags matching a pattern
+
+```yaml
+- uses: renan-alm/github-sync@simple
+  with:
+    source_repo: "https://github.com/org/upstream-repo.git"
+    source_branch: "main"
+    destination_repo: "https://github.com/org/mirror-repo.git"
+    destination_branch: "main"
+    sync_tags: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"  # Only version tags like v1.0.0
+    github_token: ${{ secrets.PAT }}
+```
+
+### Example 4: Strict branch matching (no fallback)
+
+```yaml
+- uses: renan-alm/github-sync@simple
+  with:
+    source_repo: "https://github.com/org/upstream-repo.git"
+    source_branch: "develop"
+    destination_repo: "https://github.com/org/mirror-repo.git"
+    destination_branch: "develop"
+    use_main_as_fallback: "false"  # Fail if 'develop' doesn't exist
+    github_token: ${{ secrets.PAT }}
+```
+
+### Example 5: Cross-platform sync (GitHub to GitLab)
+
+```yaml
+- uses: renan-alm/github-sync@simple
+  with:
+    source_repo: "https://github.com/org/github-repo.git"
+    source_branch: "main"
+    source_token: ${{ secrets.GITHUB_TOKEN }}
+    destination_repo: "https://gitlab.com/org/gitlab-repo.git"
+    destination_branch: "main"
+    github_token: ${{ secrets.GITLAB_TOKEN }}
+```

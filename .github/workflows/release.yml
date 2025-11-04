@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Validate release tag
+        id: validate
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "✓ Release tag: $TAG"
+
+      - name: Create git tag
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.validate.outputs.tag }} || echo "Tag already exists"
+          git push origin ${{ steps.validate.outputs.tag }} || echo "Tag push skipped"
+
+      - name: Release summary
+        run: |
+          echo "## Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** \`${{ steps.validate.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Release Name:** ${{ github.event.release.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Draft:** ${{ github.event.release.draft }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Prerelease:** ${{ github.event.release.prerelease }}" >> $GITHUB_STEP_SUMMARY
