@@ -176,11 +176,12 @@ async function setupSourceRemote(srcUrl) {
   core.info("✓ Fetch from source completed");
 }
 
-async function syncBranches(sourceBranch, destinationBranch, syncAllBranches) {
-  if (syncAllBranches) {
-    core.info("=== Syncing All Branches ===");
-
-    let stdout = "";
+/**
+ * Helper: Get available branches from source remote
+ */
+async function getSourceBranches() {
+  let stdout = "";
+  try {
     await exec.exec("git", ["branch", "-r"], {
       listeners: {
         stdout: (data) => {
@@ -188,13 +189,25 @@ async function syncBranches(sourceBranch, destinationBranch, syncAllBranches) {
         },
       },
     });
+  } catch (error) {
+    core.error(`Could not list branches: ${error.message}`);
+    throw error;
+  }
 
-    const branchNames = stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("source/") && !line.includes("->"))
-      .map((line) => line.replace("source/", ""));
+  const branchNames = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("source/") && !line.includes("->"))
+    .map((line) => line.replace("source/", ""));
 
+  return branchNames;
+}
+
+async function syncBranches(sourceBranch, destinationBranch, syncAllBranches) {
+  if (syncAllBranches) {
+    core.info("=== Syncing All Branches ===");
+
+    const branchNames = await getSourceBranches();
     core.info(`Found ${branchNames.length} branches to sync`);
 
     for (const branch of branchNames) {
@@ -209,18 +222,24 @@ async function syncBranches(sourceBranch, destinationBranch, syncAllBranches) {
     }
   } else {
     core.info("=== Syncing Single Branch ===");
-    core.info(`Fetching branch: ${sourceBranch}`);
-    await exec.exec("git", ["fetch", "source", sourceBranch]);
-    core.info(`✓ Fetched: ${sourceBranch}`);
+    
+    // Check available branches first
+    const availableBranches = await getSourceBranches();
+    
+    if (!availableBranches.includes(sourceBranch)) {
+      throw new Error(
+        `Branch "${sourceBranch}" not found in source repository. Available branches: ${availableBranches.join(", ") || "none"}`
+      );
+    }
 
-    core.info(`Pushing to: ${destinationBranch}`);
+    core.info(`Syncing branch: ${sourceBranch} → ${destinationBranch}`);
     await exec.exec("git", [
       "push",
       "origin",
       `refs/remotes/source/${sourceBranch}:refs/heads/${destinationBranch}`,
       "--force",
     ]);
-    core.info(`✓ Pushed to: ${destinationBranch}`);
+    core.info(`✓ Branch synced: ${sourceBranch} → ${destinationBranch}`);
   }
 }
 
