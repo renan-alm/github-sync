@@ -54,17 +54,42 @@ async function run() {
 
     // Prepare source and destination URLs
     let srcUrl = sourceRepo;
-    if (sourceToken && srcUrl.startsWith("https://")) {
-      srcUrl = srcUrl.replace("https://", `https://${sourceToken}@`);
-    }
     let dstUrl = destinationRepo;
-    if (dstUrl.startsWith("https://")) {
-      dstUrl = dstUrl.replace("https://", `https://${destinationToken}@`);
-    }
 
     // Always perform a fresh clone of the destination repo
     core.info("Cloning destination repo...");
     const git = simpleGit();
+    
+    // Configure git user
+    await git.addConfig("user.name", "github-sync-action");
+    await git.addConfig("user.email", "github-sync@github.com");
+    
+    // Use git credential storage approach - embed token in URL
+    // This is the most reliable way to pass credentials to git
+    if (destinationToken) {
+      try {
+        const destUrl = new URL(dstUrl);
+        destUrl.username = "x-access-token";
+        destUrl.password = destinationToken;
+        dstUrl = destUrl.toString();
+      } catch {
+        // If URL parsing fails, try simple string replacement
+        dstUrl = dstUrl.replace("https://", `https://x-access-token:${destinationToken}@`);
+      }
+    }
+    
+    if (sourceToken) {
+      try {
+        const srcUrlObj = new URL(srcUrl);
+        srcUrlObj.username = "x-access-token";
+        srcUrlObj.password = sourceToken;
+        srcUrl = srcUrlObj.toString();
+      } catch {
+        // If URL parsing fails, try simple string replacement
+        srcUrl = srcUrl.replace("https://", `https://x-access-token:${sourceToken}@`);
+      }
+    }
+    
     await git.clone(dstUrl, "repo");
 
     const repo = simpleGit("repo");
