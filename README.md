@@ -17,10 +17,12 @@ A GitHub Action for syncing repositories using **force push** with GitHub App au
 You can authenticate using either:
 
 **Option 1: GitHub Personal Access Token (PAT)**
+
 - Create a Personal Access Token with repo access
 - Add it as a repository secret (e.g., `PAT`)
 
 **Option 2: GitHub App** (Recommended for security)
+
 - Create a GitHub App or use an existing one
 - Get your GitHub App ID, private key, and installation ID
 - Add these as repository secrets
@@ -122,7 +124,7 @@ To sync all branches from source to destination:
 ```yaml
 with:
   sync_all_branches: "true"
-  sync_tags: "true"  # Optional: sync all tags
+  sync_tags: "true" # Optional: sync all tags
 ```
 
 This will force sync ALL branches to match the source repo. Branches created only in the destination repo will not be affected, but all other branches will be hard reset to match the source repo.
