@@ -21,7 +21,7 @@ function readInputs() {
     syncTags: core.getInput("sync_tags"),
     sourceToken: core.getInput("source_token"),
     syncAllBranches: core.getInput("sync_all_branches") === "true",
-    useMainAsFallback: core.getInput("use_main_as_fallback") === "true",
+    useMainAsFallback: core.getInput("use_main_as_fallback") !== "false", // Default to true
     githubAppId: core.getInput("github_app_id"),
     githubAppPrivateKey: core.getInput("github_app_private_key"),
     githubAppInstallationId: core.getInput("github_app_installation_id"),

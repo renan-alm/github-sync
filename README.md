@@ -99,17 +99,32 @@ jobs:
 - `sync_tags` (optional): `true` to sync all tags, regex pattern to sync matching tags, or omit to skip
 - `source_token` (optional): Access token for private source repos (required for private HTTPS repos without embedded credentials)
 - `sync_all_branches` (optional): `true` to sync all branches from source repo
+- `use_main_as_fallback` (optional): `true` (default) to fallback to `main` or `master` if specified branch not found, `false` for strict branch matching
 
 **Authentication (provide one of the following):**
 
-- `github_token` (optional): GitHub Personal Access Token (PAT) for authentication
-- `github_app_id` (optional): GitHub App ID
-- `github_app_private_key` (optional): GitHub App private key
-- `github_app_installation_id` (optional): GitHub App installation ID
+- `github_token` (optional): GitHub Personal Access Token (PAT) for HTTPS authentication
+- `github_app_id`, `github_app_private_key`, `github_app_installation_id` (optional): GitHub App for HTTPS authentication
 
-> **Note**: Either `github_token` OR all three GitHub App parameters must be provided for HTTPS authentication. SSH URLs do not require tokens if SSH keys are configured.
+> **Note**: For HTTPS URLs, provide either a `github_token` OR all three GitHub App parameters. SSH URLs don't require authentication if SSH keys are configured. The token will also be used for source repos if no `source_token` is provided.
 
 ### Workflow Considerations
+
+#### Branch Fallback Behavior
+
+By default, if the specified `source_branch` doesn't exist in the source repository, the action will automatically try `main` or `master` as fallbacks (in that order). This makes the action more flexible when dealing with repositories that use different default branch names.
+
+**Example**: If you specify `source_branch: main` but the source repo only has `master`, it will automatically sync `master` instead.
+
+To disable this behavior and require exact branch matching, set `use_main_as_fallback: false`:
+
+```yaml
+with:
+  source_branch: "main"
+  use_main_as_fallback: false  # Fail if exact branch not found
+```
+
+#### Workflow File Location
 
 If `destination_branch` is the same as the branch containing this workflow file, the workflow (and all files) will be overwritten by `source_branch` files. A potential solution is:
 
