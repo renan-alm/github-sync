@@ -27,11 +27,11 @@ jobs:
   repo-sync:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         persist-credentials: false
     - name: repo-sync
-      uses: repo-sync/github-sync@v2
+      uses: repo-sync/github-sync@v1
       with:
         source_repo: ""
         source_branch: ""

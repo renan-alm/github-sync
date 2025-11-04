@@ -20,10 +20,13 @@
   ],
   "author": "Renan Alm <renan-alm@github.com>",
   "license": "MIT",
-  "dependencies": {},
+  "dependencies": {
+    "simple-git": "^3.20.0"
+  },
   "devDependencies": {
     "eslint": "^8.54.0",
     "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.0",
     "prettier": "^3.1.0"
   },
   "engines": {

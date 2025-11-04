@@ -5,7 +5,7 @@ import { validateGitHubToken, setupSSHKey, sync } from "./lib/sync.js";
 /**
  * Main entry point for the GitHub Sync action
  */
-function main() {
+async function main() {
   try {
     // Validate prerequisites
     validateGitHubToken();
@@ -41,7 +41,7 @@ function main() {
     }
 
     // Execute the sync
-    sync(upstreamRepo, branchMapping);
+    await sync(upstreamRepo, branchMapping);
   } catch (error) {
     console.error(`Error: ${error.message}`);
     process.exit(1);
