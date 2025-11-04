@@ -31,7 +31,7 @@ jobs:
       with:
         persist-credentials: false
     - name: repo-sync
-      uses: repo-sync/github-sync@v1
+      uses: renan-alm/github-sync@v1
       with:
         source_repo: ""
         source_branch: ""
