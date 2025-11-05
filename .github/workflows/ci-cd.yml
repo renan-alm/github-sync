@@ -4,9 +4,18 @@ on:
   pull_request:
     branches:
       - main
+      - master
   push:
     branches:
       - main
+      - master
+  workflow_dispatch:
+    inputs:
+      skip_release:
+        description: 'Skip automatic release creation'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -23,7 +32,7 @@ jobs:
     steps:
       - name: Checkout
         id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
         id: setup-node
@@ -47,38 +56,69 @@ jobs:
           git status
           if [[ -n "$(git status --porcelain ./dist)" ]]; then
             echo "changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Bundle changes detected"
           else
             echo "changes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No bundle changes"
           fi
 
       - name: Commit changes
-        if: steps.gitChanges.outputs.changes == 'true' && github.ref == 'refs/heads/main'
+        if: steps.gitChanges.outputs.changes == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add ./dist
-          git commit -m "[skip ci]: Bundle and check javascript. Release $VERSION"
+          git commit -m "📦 [skip ci]: Bundle and check javascript. Release $VERSION"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release
-        if: steps.gitChanges.outputs.changes == 'true' && github.ref == 'refs/heads/main'
+        if: steps.gitChanges.outputs.changes == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && inputs.skip_release != true
         id: create_release
         run: |
-          gh release create $VERSION ./dist/* --title "Release $VERSION" --notes "This is an automated release created by the CI workflow."
+          # Check if this is a major change that might warrant a manual release
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          if echo "$COMMIT_MSG" | grep -q -E "(BREAKING|breaking|major:|feat!:|fix!:)"; then
+            echo "::notice::This appears to be a major change. Consider creating a manual release with proper semantic versioning."
+          fi
+          
+          gh release create $VERSION ./dist/* \
+            --title "Automated Release $VERSION" \
+            --notes "🤖 This is an automated release created by the CI workflow.
+          
+          **Changes:**
+          - Updated bundle from commit: \`${{ github.sha }}\`
+          
+          **Note:** For major releases, consider using the manual release workflow with proper semantic versioning."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create tags
-        if: steps.gitChanges.outputs.changes == 'true' && github.ref == 'refs/heads/main'
+        if: steps.gitChanges.outputs.changes == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && inputs.skip_release != true
         run: |
           git tag $VERSION
           git push origin $VERSION
-          git tag -fa v1 $VERSION -m "Update v1 tag to $VERSION"
+          # Only update v1 for automated releases, manual releases handle their own major tags
+          git tag -fa v1 $VERSION -m "📌 Update v1 tag to $VERSION"
           git push origin v1 --force
 
       - name: Warn if no new binaries
         if: steps.gitChanges.outputs.changes != 'true'
         run: |
-          echo "::warning::No new binaries have been created and no new release tag will be created."
+          echo "::notice::No new binaries have been created and no new release tag will be created."
+          
+      - name: Summary
+        run: |
+          echo "## 🔍 CI/CD Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Bundle Changes:** ${{ steps.gitChanges.outputs.changes }}" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ steps.gitChanges.outputs.changes }}" == "true" && ("${{ github.ref }}" == "refs/heads/main" || "${{ github.ref }}" == "refs/heads/master") ]]; then
+            if [[ "${{ inputs.skip_release }}" == "true" ]]; then
+              echo "**Release:** Skipped (manual override)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "**Release:** Created \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+              echo "🔗 [View Release](https://github.com/${{ github.repository }}/releases/tag/$VERSION)" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi

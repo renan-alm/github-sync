@@ -1,37 +1,122 @@
-name: Release
+name: 🏷️ Manual Release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v2.1.0)'
+        required: true
+        type: string
+      release_type:
+        description: 'Type of release'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - prerelease
+      update_major_tag:
+        description: 'Update major version tag (e.g., v2)'
+        required: true
+        default: true
+        type: boolean
+      release_notes:
+        description: 'Release notes (optional)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+  checks: write
+  packages: write
 
 jobs:
-  release:
+  manual-release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Validate release tag
-        id: validate
+      - name: Validate version format
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "✓ Release tag: $TAG"
+          if [[ ! "${{ inputs.version }}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "❌ Invalid version format. Use semantic versioning (e.g., v2.1.0)"
+            exit 1
+          fi
+          VERSION="${{ inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v ]]; then
+            VERSION="v$VERSION"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-      - name: Create git tag
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Dependencies
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.validate.outputs.tag }} || echo "Tag already exists"
-          git push origin ${{ steps.validate.outputs.tag }} || echo "Tag push skipped"
+          npm install
+          npm i -g @vercel/ncc
+
+      - name: Bundle
+        run: ncc build index.js --license licenses.txt
+
+      - name: Commit bundled code if changed
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          if [[ -n "$(git status --porcelain ./dist)" ]]; then
+            git add ./dist
+            git commit -m "📦 Bundle code for release $VERSION"
+            git push
+            echo "BUNDLE_UPDATED=true" >> $GITHUB_ENV
+          else
+            echo "✅ No changes to bundle"
+            echo "BUNDLE_UPDATED=false" >> $GITHUB_ENV
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release
+        run: |
+          RELEASE_NOTES="${{ inputs.release_notes }}"
+          if [[ -z "$RELEASE_NOTES" ]]; then
+            if [[ "$BUNDLE_UPDATED" == "true" ]]; then
+              RELEASE_NOTES="🚀 Release $VERSION with updated bundle"
+            else
+              RELEASE_NOTES="🚀 Release $VERSION"
+            fi
+          fi
+          
+          gh release create $VERSION ./dist/* \
+            --title "Release $VERSION" \
+            --notes "$RELEASE_NOTES" \
+            ${{ inputs.release_type == 'prerelease' && '--prerelease' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update major version tag
+        if: inputs.update_major_tag && inputs.release_type == 'release'
+        run: |
+          MAJOR_VERSION=$(echo $VERSION | sed 's/v\([^.]*\).*/v\1/')
+          git tag -fa $MAJOR_VERSION $VERSION -m "📌 Update $MAJOR_VERSION tag to $VERSION"
+          git push origin $MAJOR_VERSION --force
 
       - name: Release summary
         run: |
-          echo "## Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎉 Release Created Successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** \`${{ steps.validate.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Release Name:** ${{ github.event.release.name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Draft:** ${{ github.event.release.draft }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Prerelease:** ${{ github.event.release.prerelease }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Type:** ${{ inputs.release_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Bundle Updated:** $BUNDLE_UPDATED" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ inputs.update_major_tag }}" == "true" && "${{ inputs.release_type }}" == "release" ]]; then
+            MAJOR_VERSION=$(echo $VERSION | sed 's/v\([^.]*\).*/v\1/')
+            echo "**Major Tag Updated:** \`$MAJOR_VERSION\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 [View Release](https://github.com/${{ github.repository }}/releases/tag/$VERSION)" >> $GITHUB_STEP_SUMMARY
