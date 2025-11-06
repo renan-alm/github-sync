@@ -1,4 +1,4 @@
-import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
+import './sourcemap-register.cjs';import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /******/ var __webpack_modules__ = ({
 
 /***/ 4914:
@@ -41448,7 +41448,7 @@ var lib_core = __nccwpck_require__(7484);
 var lib_exec = __nccwpck_require__(5236);
 // EXTERNAL MODULE: ./node_modules/@octokit/auth-app/dist-node/index.js
 var dist_node = __nccwpck_require__(8594);
-;// CONCATENATED MODULE: ./gerrit.js
+;// CONCATENATED MODULE: ./src/gerrit.js
 
 
 
@@ -41684,7 +41684,7 @@ function logGerritInfo(sourceRepo, destinationRepo) {
   lib_core.info("Note: Changes will be created in Gerrit review queue");
 }
 
-;// CONCATENATED MODULE: ./auth-validation.js
+;// CONCATENATED MODULE: ./src/auth-validation.js
 
 
 /**
@@ -41758,10 +41758,10 @@ function validateAuthentication(inputs) {
   const destProtocol = getProtocolType(inputs.destinationRepo);
 
   // Log detected configuration
-  core.debug(`Source repo protocol: ${sourceProtocol} (${inputs.sourceRepo})`);
-  core.debug(`Destination repo protocol: ${destProtocol} (${inputs.destinationRepo})`);
-  core.debug(`Token auth available: ${hasTokenAuth}`);
-  core.debug(`SSH auth available: ${hasSSHAuth}`);
+  lib_core.debug(`Source repo protocol: ${sourceProtocol} (${inputs.sourceRepo})`);
+  lib_core.debug(`Destination repo protocol: ${destProtocol} (${inputs.destinationRepo})`);
+  lib_core.debug(`Token auth available: ${hasTokenAuth}`);
+  lib_core.debug(`SSH auth available: ${hasSSHAuth}`);
 
   // ===== VALIDATION LOGIC =====
 
@@ -41970,11 +41970,11 @@ function formatValidationErrors(validation) {
 function logValidationResult(validation) {
   if (!validation.isValid) {
     const formatted = formatValidationErrors(validation);
-    core.error(formatted);
+    lib_core.error(formatted);
   } else if (validation.warnings.length > 0) {
-    core.warning("Authentication validation has warnings:\n" + formatValidationErrors(validation));
+    lib_core.warning("Authentication validation has warnings:\n" + formatValidationErrors(validation));
   } else {
-    core.info("✓ Authentication configuration is valid");
+    lib_core.info("✓ Authentication configuration is valid");
   }
 }
 
@@ -41984,7 +41984,7 @@ var external_fs_ = __nccwpck_require__(9896);
 var external_path_ = __nccwpck_require__(6928);
 // EXTERNAL MODULE: external "os"
 var external_os_ = __nccwpck_require__(857);
-;// CONCATENATED MODULE: ./ssh-auth.js
+;// CONCATENATED MODULE: ./src/ssh-auth.js
 
 
 
@@ -42334,7 +42334,7 @@ async function setupSSHAuthentication(sshConfig) {
   }
 }
 
-;// CONCATENATED MODULE: ./index.js
+;// CONCATENATED MODULE: ./src/index.js
 
 
 
@@ -42730,6 +42730,16 @@ async function run() {
     const inputs = readInputs();
     logInputs(inputs);
 
+    // Validate authentication configuration early
+    const authValidation = validateAuthentication(inputs);
+    if (!authValidation.isValid) {
+      logValidationResult(authValidation);
+      throw new Error("Authentication configuration is invalid. See errors above.");
+    }
+    if (authValidation.warnings.length > 0) {
+      logValidationResult(authValidation);
+    }
+
     // Setup SSH authentication if needed
     const authMethods = detectAuthenticationMethods(inputs.sourceRepo, inputs.destinationRepo);
     if (authMethods.needsSSH) {
@@ -42792,3 +42802,5 @@ async function run() {
 
 run();
 
+
+//# sourceMappingURL=index.js.map
