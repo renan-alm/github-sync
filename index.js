@@ -1,6 +1,12 @@
 import * as core from "@actions/core";
 import * as exec from "@actions/exec";
 import { createAppAuth } from "@octokit/auth-app";
+import {
+  isGerritRepository,
+  syncBranchesGerrit,
+  syncTagsGerrit,
+  logGerritInfo,
+} from "./gerrit.js";
 
 async function getAppInstallationToken(appId, privateKey, installationId) {
   const auth = createAppAuth({
@@ -368,6 +374,9 @@ async function run() {
     const inputs = readInputs();
     logInputs(inputs);
 
+    // Detect if destination is Gerrit
+    const isDestinationGerrit = isGerritRepository(inputs.destinationRepo);
+
     const destinationToken = await authenticate(inputs);
 
     await setupGitConfig();
@@ -384,14 +393,25 @@ async function run() {
 
     await setupSourceRemote(srcUrl);
 
-    await syncBranches(
-      inputs.sourceBranch,
-      inputs.destinationBranch,
-      inputs.syncAllBranches,
-      inputs.useMainAsFallback,
-    );
-
-    await syncTags(inputs.syncTags);
+    // Use Gerrit-specific or standard sync based on detection
+    if (isDestinationGerrit) {
+      logGerritInfo(inputs.sourceRepo, inputs.destinationRepo);
+      await syncBranchesGerrit(
+        inputs.sourceBranch,
+        inputs.destinationBranch,
+        inputs.syncAllBranches,
+        inputs.useMainAsFallback,
+      );
+      await syncTagsGerrit(inputs.syncTags);
+    } else {
+      await syncBranches(
+        inputs.sourceBranch,
+        inputs.destinationBranch,
+        inputs.syncAllBranches,
+        inputs.useMainAsFallback,
+      );
+      await syncTags(inputs.syncTags);
+    }
 
     core.info("=== GitHub Sync Completed Successfully ===");
     core.info("Sync complete!");

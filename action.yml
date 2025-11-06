@@ -1,18 +1,18 @@
 name: GitHub Repo Sync
 author: Renan Alm <renan-alm@github.com>
-description: ⤵️ Sync repository with remote
+description: ⤵️ Sync repository with remote (GitHub, GitLab, Gitea, Gerrit, and more)
 branding:
   icon: "git-branch"
   color: "gray-dark"
 inputs:
   source_repo:
-    description: GitHub public repo slug or full https clone url (with access_token if needed)
+    description: GitHub public repo slug or full https clone url (with access_token if needed). Supports GitHub, GitLab, Gitea, Gerrit, etc.
     required: true
   source_branch:
     description: Branch name to sync from
     required: true
   destination_repo:
-    description: Destination repo full https clone url
+    description: Destination repo full https clone url. For Gerrit repositories, the action automatically uses refs/for/* for review queue pushes
     required: true
   destination_branch:
     description: Branch name to sync to in this repo
