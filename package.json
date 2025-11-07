@@ -2,15 +2,16 @@
   "name": "github-repo-sync",
   "version": "1.0.0",
   "description": "A GitHub Action for syncing the current repository with a remote repository",
-  "main": "index.js",
   "type": "module",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "node index.js",
-    "build": "ncc build index.js --license licenses.txt --out dist",
-    "bundle": "ncc build index.js --license licenses.txt --out dist",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "format": "prettier --write .",
+    "build": "ncc build src/index.js -o dist --source-map --license licenses.txt",
+    "build:watch": "ncc build src/index.js -o dist --source-map --license licenses.txt --watch",
+    "package": "npm run build",
+    "lint": "prettier --check .",
+    "lint:fix": "prettier --write .",
+    "lint:js": "prettier --check \"**/*.js\"",
+    "lint:js:fix": "prettier --write \"**/*.js\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [

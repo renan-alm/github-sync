@@ -1,6 +1,22 @@
 import * as core from "@actions/core";
 import * as exec from "@actions/exec";
 import { createAppAuth } from "@octokit/auth-app";
+import {
+  isGerritRepository,
+  syncBranchesGerrit,
+  syncTagsGerrit,
+  logGerritInfo,
+} from "./gerrit.js";
+import {
+  validateAuthentication,
+  logValidationResult,
+} from "./auth-validation.js";
+import {
+  readSSHInputs,
+  isSSHUrl,
+  detectAuthenticationMethods,
+  setupSSHAuthentication,
+} from "./ssh-auth.js";
 
 async function getAppInstallationToken(appId, privateKey, installationId) {
   const auth = createAppAuth({
@@ -19,14 +35,40 @@ function readInputs() {
     destinationRepo: core.getInput("destination_repo", { required: true }),
     destinationBranch: core.getInput("destination_branch", { required: true }),
     syncTags: core.getInput("sync_tags"),
+    githubToken: core.getInput("github_token"),
     sourceToken: core.getInput("source_token"),
+    destinationToken: core.getInput("destination_token"),
     syncAllBranches: core.getInput("sync_all_branches") === "true",
     useMainAsFallback: core.getInput("use_main_as_fallback") !== "false", // Default to true
     githubAppId: core.getInput("github_app_id"),
     githubAppPrivateKey: core.getInput("github_app_private_key"),
     githubAppInstallationId: core.getInput("github_app_installation_id"),
-    githubToken: core.getInput("github_token"),
+    // SSH inputs
+    sshKey: core.getInput("ssh_key"),
+    sshKeyPath: core.getInput("ssh_key_path"),
+    sshPassphrase: core.getInput("ssh_passphrase"),
+    sshKnownHostsPath: core.getInput("ssh_known_hosts_path"),
+    sshStrictHostKeyChecking: core.getInput("ssh_strict_host_key_checking") !== "false",
   };
+}
+
+/**
+ * Extract hostname from SSH URL
+ * Supports: git@github.com:user/repo.git or ssh://github.com/user/repo.git
+ */
+function extractSSHHostname(url) {
+  if (!url) return null;
+  
+  if (url.startsWith("git@")) {
+    // Format: git@github.com:user/repo.git
+    const match = url.match(/git@([^:]+):/);
+    return match ? match[1] : null;
+  } else if (url.startsWith("ssh://")) {
+    // Format: ssh://github.com/user/repo.git
+    const match = url.match(/ssh:\/\/([^/]+)\//);
+    return match ? match[1] : null;
+  }
+  return null;
 }
 
 function logInputs(inputs) {
@@ -39,8 +81,24 @@ function logInputs(inputs) {
 }
 
 async function authenticate(inputs) {
-  if (inputs.githubToken) {
-    core.info("Using GitHub Personal Access Token for authentication...");
+  // Check if using SSH authentication
+  const authMethods = detectAuthenticationMethods(inputs.sourceRepo, inputs.destinationRepo);
+
+  if (authMethods.needsSSH) {
+    core.info("SSH authentication detected for one or more repositories");
+    // For SSH, token-based auth is not needed; return null
+    // SSH agent will handle authentication
+    return null;
+  }
+
+  // Token-based authentication (HTTPS)
+  // Priority: destination_token (if provided) > github_token > github_app > error
+  
+  if (inputs.destinationToken) {
+    core.info("Using destination-specific Personal Access Token for HTTPS authentication...");
+    return inputs.destinationToken;
+  } else if (inputs.githubToken) {
+    core.info("Using GitHub Personal Access Token for HTTPS authentication...");
     return inputs.githubToken;
   } else if (
     inputs.githubAppId &&
@@ -57,7 +115,7 @@ async function authenticate(inputs) {
     return token;
   } else {
     throw new Error(
-      "Either github_token (PAT) or github_app credentials (app_id, private_key, installation_id) must be provided",
+      "Authentication required: Either github_token (PAT), github_app credentials, or ssh_key must be provided",
     );
   }
 }
@@ -95,15 +153,18 @@ function prepareUrls(
   let srcUrl = sourceRepo;
   let dstUrl = destinationRepo;
 
+  // Only embed tokens for HTTPS URLs; SSH URLs will use SSH agent
   if (destinationToken && dstUrl.startsWith("https://")) {
     dstUrl = dstUrl.replace(
       "https://",
       `https://x-access-token:${destinationToken}@`,
     );
-    core.info("✓ Destination URL prepared with authentication");
+    core.info("✓ Destination URL prepared with HTTPS token authentication");
     core.debug(
       `Destination URL: ${dstUrl.replace(/x-access-token:.*@/, "x-access-token:***@")}`,
     );
+  } else if (isSSHUrl(dstUrl)) {
+    core.info("✓ Destination URL is SSH-based, will use SSH agent authentication");
   }
 
   // Use sourceToken if provided, otherwise fall back to destinationToken for source
@@ -122,6 +183,8 @@ function prepareUrls(
     core.debug(
       `Source URL: ${srcUrl.replace(/x-access-token:.*@/, "x-access-token:***@")}`,
     );
+  } else if (isSSHUrl(srcUrl)) {
+    core.info("✓ Source URL is SSH-based, will use SSH agent authentication");
   }
 
   return { srcUrl, dstUrl };
@@ -205,35 +268,6 @@ async function getSourceBranches() {
 }
 
 /**
- * Helper: Get the default branch from source remote
- */
-async function getDefaultBranch() {
-  let stdout = "";
-  try {
-    await exec.exec("git", ["symbolic-ref", "refs/remotes/source/HEAD"], {
-      listeners: {
-        stdout: (data) => {
-          stdout += data.toString();
-        },
-      },
-    });
-  } catch (error) {
-    core.warning(`Could not determine default branch: ${error.message}`);
-    return null;
-  }
-
-  // Output format: "ref: refs/remotes/source/master"
-  const match = stdout.match(/refs\/remotes\/source\/(.+)$/);
-  if (match && match[1]) {
-    const defaultBranch = match[1].trim();
-    core.info(`Default branch detected: ${defaultBranch}`);
-    return defaultBranch;
-  }
-
-  return null;
-}
-
-/**
  * Helper: Try to find a fallback branch (main or master)
  */
 async function getTryFallbackBranch(availableBranches) {
@@ -259,10 +293,49 @@ async function syncBranches(
   if (syncAllBranches) {
     core.info("=== Syncing All Branches ===");
 
-    const branchNames = await getSourceBranches();
-    core.info(`Found ${branchNames.length} branches to sync`);
+    const sourceBranchNames = await getSourceBranches();
+    core.info(`Found ${sourceBranchNames.length} branches in source to sync`);
 
-    for (const branch of branchNames) {
+    // Get all destination branches (excluding HEAD)
+    let stdout = "";
+    await exec.exec("git", ["branch", "-r"], {
+      listeners: {
+        stdout: (data) => {
+          stdout += data.toString();
+        },
+      },
+    });
+
+    const destinationBranches = stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.includes("HEAD") && line.startsWith("origin/"))
+      .map((line) => line.replace("origin/", ""));
+
+    core.info(`Found ${destinationBranches.length} branches in destination`);
+
+    // Delete destination branches that don't exist in source
+    const branchesToDelete = destinationBranches.filter(
+      (branch) => !sourceBranchNames.includes(branch),
+    );
+
+    if (branchesToDelete.length > 0) {
+      core.info(`Deleting ${branchesToDelete.length} destination-only branches...`);
+      for (const branch of branchesToDelete) {
+        try {
+          core.info(`Deleting branch: ${branch}`);
+          await exec.exec("git", ["push", "origin", `--delete`, branch]);
+          core.info(`✓ Branch deleted: ${branch}`);
+        } catch (error) {
+          core.warning(`Could not delete branch ${branch}: ${error.message}`);
+        }
+      }
+    } else {
+      core.info("No destination-only branches to delete");
+    }
+
+    // Push all source branches to destination
+    for (const branch of sourceBranchNames) {
       core.info(`Syncing branch: ${branch}`);
       await exec.exec("git", [
         "push",
@@ -368,6 +441,48 @@ async function run() {
     const inputs = readInputs();
     logInputs(inputs);
 
+    // Validate authentication configuration early
+    const authValidation = validateAuthentication(inputs);
+    if (!authValidation.isValid) {
+      logValidationResult(authValidation);
+      throw new Error("Authentication configuration is invalid. See errors above.");
+    }
+    if (authValidation.warnings.length > 0) {
+      logValidationResult(authValidation);
+    }
+
+    // Setup SSH authentication if needed
+    const authMethods = detectAuthenticationMethods(inputs.sourceRepo, inputs.destinationRepo);
+    if (authMethods.needsSSH) {
+      const sshConfig = {
+        sshKey: inputs.sshKey,
+        sshKeyPath: inputs.sshKeyPath,
+        sshPassphrase: inputs.sshPassphrase,
+        sshKnownHostsPath: inputs.sshKnownHostsPath,
+        sshStrictHostKeyChecking: inputs.sshStrictHostKeyChecking,
+      };
+      
+      // Collect SSH hosts to validate
+      const hostsToValidate = [];
+      if (authMethods.sourceIsSSH) {
+        const sourceHost = extractSSHHostname(inputs.sourceRepo);
+        if (sourceHost) hostsToValidate.push(sourceHost);
+      }
+      if (authMethods.destinationIsSSH) {
+        const destHost = extractSSHHostname(inputs.destinationRepo);
+        if (destHost) hostsToValidate.push(destHost);
+      }
+      // Fallback to github.com if no SSH hosts found (shouldn't happen, but defensive)
+      if (hostsToValidate.length === 0) {
+        hostsToValidate.push("github.com");
+      }
+      
+      await setupSSHAuthentication(sshConfig, hostsToValidate);
+    }
+
+    // Detect if destination is Gerrit
+    const isDestinationGerrit = isGerritRepository(inputs.destinationRepo);
+
     const destinationToken = await authenticate(inputs);
 
     await setupGitConfig();
@@ -384,14 +499,25 @@ async function run() {
 
     await setupSourceRemote(srcUrl);
 
-    await syncBranches(
-      inputs.sourceBranch,
-      inputs.destinationBranch,
-      inputs.syncAllBranches,
-      inputs.useMainAsFallback,
-    );
-
-    await syncTags(inputs.syncTags);
+    // Use Gerrit-specific or standard sync based on detection
+    if (isDestinationGerrit) {
+      logGerritInfo(inputs.sourceRepo, inputs.destinationRepo);
+      await syncBranchesGerrit(
+        inputs.sourceBranch,
+        inputs.destinationBranch,
+        inputs.syncAllBranches,
+        inputs.useMainAsFallback,
+      );
+      await syncTagsGerrit(inputs.syncTags);
+    } else {
+      await syncBranches(
+        inputs.sourceBranch,
+        inputs.destinationBranch,
+        inputs.syncAllBranches,
+        inputs.useMainAsFallback,
+      );
+      await syncTags(inputs.syncTags);
+    }
 
     core.info("=== GitHub Sync Completed Successfully ===");
     core.info("Sync complete!");

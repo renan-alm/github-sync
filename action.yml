@@ -1,18 +1,18 @@
 name: GitHub Repo Sync
 author: Renan Alm <renan-alm@github.com>
-description: ⤵️ Sync repository with remote
+description: ⤵️ Sync repository with remote (GitHub, GitLab, Gitea, Gerrit, and more)
 branding:
   icon: "git-branch"
   color: "gray-dark"
 inputs:
   source_repo:
-    description: GitHub public repo slug or full https clone url (with access_token if needed)
+    description: GitHub public repo slug or full https clone url (with access_token if needed). Supports GitHub, GitLab, Gitea, Gerrit, etc.
     required: true
   source_branch:
     description: Branch name to sync from
     required: true
   destination_repo:
-    description: Destination repo full https clone url
+    description: Destination repo full https clone url. For Gerrit repositories, the action automatically uses refs/for/* for review queue pushes
     required: true
   destination_branch:
     description: Branch name to sync to in this repo
@@ -39,7 +39,25 @@ inputs:
     description: GitHub App installation ID (required if not using github_token)
     required: false
   github_token:
-    description: GitHub Personal Access Token (required if not using GitHub App)
+    description: "GitHub Personal Access Token for destination repo. Used for both source and destination if source_token not provided. Alternative to github_app_*"
+    required: false
+  destination_token:
+    description: "GitHub Personal Access Token (PAT) for destination repo authentication. Use when destination uses HTTPS and different token than github_token. If source_token is provided, destination_token is required"
+    required: false
+  ssh_key:
+    description: SSH private key content for SSH-based authentication. Can be raw key, escaped key (\\n), or base64 encoded
+    required: false
+  ssh_key_path:
+    description: Path to SSH private key file (alternative to ssh_key)
+    required: false
+  ssh_passphrase:
+    description: Passphrase for encrypted SSH private key
+    required: false
+  ssh_known_hosts_path:
+    description: Path to custom SSH known_hosts file
+    required: false
+  ssh_strict_host_key_checking:
+    description: Enable strict SSH host key checking (default true)
     required: false
 runs:
   using: "node20"

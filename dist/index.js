@@ -1,4 +1,4 @@
-import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
+import './sourcemap-register.cjs';import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /******/ var __webpack_modules__ = ({
 
 /***/ 4914:
@@ -41441,15 +41441,1025 @@ module.exports = /*#__PURE__*/JSON.parse('[[[0,44],"disallowed_STD3_valid"],[[45
 /******/ 
 /************************************************************************/
 var __webpack_exports__ = {};
-/* harmony import */ var _actions_core__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(7484);
-/* harmony import */ var _actions_exec__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(5236);
-/* harmony import */ var _octokit_auth_app__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(8594);
+
+// EXTERNAL MODULE: ./node_modules/@actions/core/lib/core.js
+var lib_core = __nccwpck_require__(7484);
+// EXTERNAL MODULE: ./node_modules/@actions/exec/lib/exec.js
+var exec = __nccwpck_require__(5236);
+// EXTERNAL MODULE: ./node_modules/@octokit/auth-app/dist-node/index.js
+var dist_node = __nccwpck_require__(8594);
+;// CONCATENATED MODULE: ./src/gerrit.js
+
+
+
+/**
+ * Gerrit-specific repository synchronization module
+ * Handles Gerrit-specific push workflows and configurations
+ */
+
+/**
+ * Detect if a repository is Gerrit-based by checking for gerrit-specific patterns
+ * Uses Option 2: URL-based detection for fast, automatic classification
+ */
+function isGerritRepository(repoUrl) {
+  lib_core.info("=== Detecting Repository Type ===");
+  lib_core.debug(`Checking URL: ${repoUrl}`);
+
+  // Common Gerrit URL patterns
+  const gerritPatterns = [
+    /gerrit/i, // Contains "gerrit" in domain or path
+    /:29418/, // Gerrit SSH default port
+    /\/r\//, // Gerrit review path pattern
+  ];
+
+  const isGerrit = gerritPatterns.some((pattern) => pattern.test(repoUrl));
+
+  if (isGerrit) {
+    lib_core.info("✓ Gerrit repository detected");
+  } else {
+    lib_core.info("✓ Standard Git repository detected (GitHub, GitLab, Gitea, etc.)");
+  }
+
+  return isGerrit;
+}
+
+/**
+ * Gerrit-specific branch sync using refs/for/* reference
+ * This allows pushes to go to Gerrit's review queue instead of direct branch push
+ */
+async function syncBranchesGerrit(
+  sourceBranch,
+  destinationBranch,
+  syncAllBranches,
+  useMainAsFallback,
+) {
+  if (syncAllBranches) {
+    lib_core.info("=== Syncing All Branches to Gerrit (Review Queue) ===");
+
+    const branchNames = await getSourceBranchesGerrit();
+    lib_core.info(`Found ${branchNames.length} branches to sync`);
+
+    for (const branch of branchNames) {
+      lib_core.info(`Syncing branch to Gerrit: ${branch}`);
+      try {
+        // Push to refs/for/* instead of refs/heads/*
+        // This creates a change/review in Gerrit instead of direct push
+        await exec.exec("git", [
+          "push",
+          "origin",
+          `refs/remotes/source/${branch}:refs/for/${branch}`,
+          "--force",
+        ]);
+        lib_core.info(`✓ Branch synced to Gerrit review queue: ${branch}`);
+      } catch (error) {
+        lib_core.warning(
+          `⚠ Failed to sync ${branch} to Gerrit review: ${error.message}`,
+        );
+        // Continue with other branches even if one fails
+      }
+    }
+  } else {
+    lib_core.info("=== Syncing Single Branch to Gerrit (Review Queue) ===");
+
+    const availableBranches = await getSourceBranchesGerrit();
+    let actualSourceBranch = sourceBranch;
+
+    if (!availableBranches.includes(sourceBranch)) {
+      if (useMainAsFallback) {
+        lib_core.warning(
+          `Branch "${sourceBranch}" not found. Trying main or master...`,
+        );
+        const fallbackBranch = await getTryFallbackBranchGerrit(
+          availableBranches,
+        );
+
+        if (fallbackBranch) {
+          actualSourceBranch = fallbackBranch;
+          lib_core.info(`✓ Using fallback branch: ${fallbackBranch}`);
+        } else {
+          throw new Error(
+            `Branch "${sourceBranch}" not found, and no fallback (main/master) available. Available branches: ${availableBranches.join(", ") || "none"}`,
+          );
+        }
+      } else {
+        throw new Error(
+          `Branch "${sourceBranch}" not found in source repository. Available branches: ${availableBranches.join(", ") || "none"}`,
+        );
+      }
+    }
+
+    lib_core.info(
+      `Syncing branch to Gerrit review queue: ${actualSourceBranch} → ${destinationBranch}`,
+    );
+    await exec.exec("git", [
+      "push",
+      "origin",
+      `refs/remotes/source/${actualSourceBranch}:refs/for/${destinationBranch}`,
+      "--force",
+    ]);
+    lib_core.info(
+      `✓ Branch synced to Gerrit: ${actualSourceBranch} → ${destinationBranch}`,
+    );
+  }
+}
+
+/**
+ * Get available branches from source remote (Gerrit-specific)
+ */
+async function getSourceBranchesGerrit() {
+  let stdout = "";
+  try {
+    await exec.exec("git", ["branch", "-r"], {
+      listeners: {
+        stdout: (data) => {
+          stdout += data.toString();
+        },
+      },
+    });
+  } catch (error) {
+    lib_core.error(`Could not list branches: ${error.message}`);
+    throw error;
+  }
+
+  const branchNames = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.startsWith("source/") &&
+        !line.includes("->") &&
+        !line.includes("refs/for/") &&
+        !line.includes("refs/changes/"),
+    ) // Exclude Gerrit special refs
+    .map((line) => line.replace("source/", ""));
+
+  return branchNames;
+}
+
+/**
+ * Try to find a fallback branch (Gerrit-specific)
+ */
+async function getTryFallbackBranchGerrit(availableBranches) {
+  const fallbackOptions = ["main", "master"];
+
+  for (const branch of fallbackOptions) {
+    if (availableBranches.includes(branch)) {
+      lib_core.info(`Found fallback branch: ${branch}`);
+      return branch;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Gerrit-specific tag sync
+ * Note: Gerrit may have different tag handling than standard Git
+ */
+async function syncTagsGerrit(syncTags) {
+  if (syncTags === "true") {
+    lib_core.info("=== Syncing All Tags to Gerrit ===");
+    lib_core.info("Fetching tags...");
+    try {
+      await exec.exec("git", ["fetch", "source", "--tags"]);
+      lib_core.info("✓ Tags fetched");
+
+      lib_core.info("Pushing tags to Gerrit...");
+      await exec.exec("git", ["push", "origin", "--tags", "--force"]);
+      lib_core.info("✓ Tags pushed to Gerrit");
+    } catch (error) {
+      lib_core.warning(`⚠ Tag sync failed: ${error.message}`);
+    }
+  } else if (syncTags) {
+    lib_core.info("=== Syncing Tags Matching Pattern to Gerrit ===");
+    lib_core.info(`Pattern: ${syncTags}`);
+
+    lib_core.info("Fetching tags...");
+    try {
+      await exec.exec("git", ["fetch", "source", "--tags"]);
+      lib_core.info("✓ Tags fetched");
+
+      let stdout = "";
+      await exec.exec("git", ["tag"], {
+        listeners: {
+          stdout: (data) => {
+            stdout += data.toString();
+          },
+        },
+      });
+
+      const allTags = stdout.split(/\r?\n/).filter((tag) => tag.trim());
+      const matchingTags = allTags.filter((tag) => tag.match(syncTags));
+
+      lib_core.info(`Found ${matchingTags.length} matching tags`);
+
+      for (const tag of matchingTags) {
+        if (tag) {
+          lib_core.info(`Pushing tag to Gerrit: ${tag}`);
+          await exec.exec("git", [
+            "push",
+            "origin",
+            `refs/tags/${tag}:refs/tags/${tag}`,
+            "--force",
+          ]);
+          lib_core.info(`✓ Tag pushed to Gerrit: ${tag}`);
+        }
+      }
+    } catch (error) {
+      lib_core.warning(`⚠ Tag sync failed: ${error.message}`);
+    }
+  } else {
+    lib_core.info("Tag syncing disabled");
+  }
+}
+
+/**
+ * Log Gerrit-specific information
+ */
+function logGerritInfo(sourceRepo, destinationRepo) {
+  lib_core.info("=== Gerrit Sync Configuration ===");
+  lib_core.info(`Source: ${sourceRepo}`);
+  lib_core.info(`Destination: ${destinationRepo}`);
+  lib_core.info("Push Reference: refs/for/* (Gerrit review queue)");
+  lib_core.info("Note: Changes will be created in Gerrit review queue");
+}
+
+;// CONCATENATED MODULE: ./src/auth-validation.js
+
+
+/**
+ * Authentication Validation Module
+ * Provides comprehensive error checking and user guidance for authentication mismatches
+ */
+
+// ===== PROTOCOL DETECTION =====
+
+/**
+ * Check if URL is SSH-based
+ * @param {string} url - Repository URL
+ * @returns {boolean} True if URL uses SSH protocol
+ */
+function isSSHUrl(url) {
+  return url.startsWith("git@") || url.startsWith("ssh://");
+}
+
+/**
+ * Check if URL is HTTPS-based
+ * @param {string} url - Repository URL
+ * @returns {boolean} True if URL uses HTTPS protocol
+ */
+function isHTTPSUrl(url) {
+  return url.startsWith("https://");
+}
+
+/**
+ * Get URL protocol type for display
+ * @param {string} url - Repository URL
+ * @returns {string} Protocol type
+ */
+function getProtocolType(url) {
+  if (isSSHUrl(url)) return "SSH";
+  if (isHTTPSUrl(url)) return "HTTPS";
+  return "Unknown";
+}
+
+// ===== VALIDATION HELPERS =====
+
+/**
+ * Validate repo URL against available authentication
+ * @param {string} repoName - "source" or "destination" for error messages
+ * @param {string} repoUrl - Repository URL
+ * @param {boolean} hasSSHAuth - SSH authentication available
+ * @param {boolean} hasTokenAuth - Token authentication available
+ * @returns {Array} Array of error objects (empty if valid)
+ */
+function validateRepoAuth(repoName, repoUrl, hasSSHAuth, hasTokenAuth) {
+  const errors = [];
+  const isSSH = isSSHUrl(repoUrl);
+  const isHTTPS = isHTTPSUrl(repoUrl);
+
+  // SSH repo requires SSH auth
+  if (isSSH && !hasSSHAuth) {
+    errors.push({
+      field: `${repoName}_repo`,
+      issue: `${repoName === "source" ? "Source" : "Destination"} repo uses SSH but no SSH key provided`,
+      current: `${repoName === "source" ? "Source" : "Destination"}: ${repoUrl}`,
+      missing: "ssh_key or ssh_key_path",
+      suggestion: "Provide ssh_key (from secret) or ssh_key_path (from runner)",
+    });
+  }
+
+  // SSH repo with wrong auth type (token instead of SSH)
+  if (isSSH && hasTokenAuth && !hasSSHAuth) {
+    errors.push({
+      field: `${repoName}_repo + github_token`,
+      issue: `${repoName === "source" ? "Source" : "Destination"} repo uses SSH but token is provided instead of SSH key`,
+      current: `${repoName === "source" ? "Source" : "Destination"}: ${repoUrl} (SSH) + github_token provided`,
+      wrong: "Token auth cannot be used with SSH URLs",
+      suggestion: `Either (1) provide ssh_key for SSH, OR (2) convert ${repoName}_repo to HTTPS: https://github.com/org/repo.git`,
+    });
+  }
+
+  // HTTPS repo requires token auth
+  if (isHTTPS && !hasTokenAuth) {
+    errors.push({
+      field: `${repoName}_repo`,
+      issue: `${repoName === "source" ? "Source" : "Destination"} repo uses HTTPS but no token provided`,
+      current: `${repoName === "source" ? "Source" : "Destination"}: ${repoUrl}`,
+      missing: "github_token or github_app_*",
+      suggestion: "Provide github_token (PAT) or GitHub App credentials (app_id, private_key, installation_id)",
+    });
+  }
+
+  // HTTPS repo with wrong auth type (SSH instead of token)
+  if (isHTTPS && hasSSHAuth && !hasTokenAuth) {
+    errors.push({
+      field: `${repoName}_repo + ssh_key`,
+      issue: `${repoName === "source" ? "Source" : "Destination"} repo uses HTTPS but SSH key is provided instead of token`,
+      current: `${repoName === "source" ? "Source" : "Destination"}: ${repoUrl} (HTTPS) + ssh_key provided`,
+      wrong: "SSH auth cannot be used with HTTPS URLs",
+      suggestion: `Either (1) provide github_token for HTTPS, OR (2) convert ${repoName}_repo to SSH: git@github.com:org/repo.git`,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Validate authentication configuration
+ * Checks for mismatches between URL protocols and provided credentials
+ * @param {Object} inputs - Action inputs
+ * @param {string} inputs.sourceRepo - Source repository URL
+ * @param {string} inputs.destinationRepo - Destination repository URL
+ * @param {string} inputs.githubToken - GitHub token (if provided)
+ * @param {string} inputs.destinationToken - Destination-specific token (if provided)
+ * @param {string} inputs.githubAppId - GitHub App ID (if provided)
+ * @param {string} inputs.githubAppPrivateKey - GitHub App private key (if provided)
+ * @param {string} inputs.githubAppInstallationId - GitHub App installation ID (if provided)
+ * @param {string} inputs.sshKey - SSH key content (if provided)
+ * @param {string} inputs.sshKeyPath - SSH key file path (if provided)
+ * @returns {Object} Validation result with any errors or warnings
+ */
+function validateAuthentication(inputs) {
+  const errors = [];
+  const warnings = [];
+
+  // Determine what authentication is provided
+  const hasTokenAuth =
+    !!inputs.githubToken ||
+    !!inputs.destinationToken ||
+    (inputs.githubAppId &&
+      inputs.githubAppPrivateKey &&
+      inputs.githubAppInstallationId);
+  const hasSSHAuth = !!inputs.sshKey || !!inputs.sshKeyPath;
+
+  // Check repos
+  const sourceProtocol = getProtocolType(inputs.sourceRepo);
+  const destProtocol = getProtocolType(inputs.destinationRepo);
+
+  // Log detected configuration
+  lib_core.debug(`Source repo protocol: ${sourceProtocol} (${inputs.sourceRepo})`);
+  lib_core.debug(`Destination repo protocol: ${destProtocol} (${inputs.destinationRepo})`);
+  lib_core.debug(`Token auth available: ${hasTokenAuth}`);
+  lib_core.debug(`SSH auth available: ${hasSSHAuth}`);
+
+  // Validate destination_token and source_token combination
+  if (inputs.destinationToken && !inputs.sourceToken) {
+    errors.push({
+      field: "source_token",
+      issue: "destination_token provided but source_token is missing",
+      current: "destination_token present, source_token missing",
+      missing: "source_token",
+      suggestion:
+        "When using separate tokens for source and destination, provide both source_token and destination_token",
+    });
+  }
+
+  if (inputs.sourceToken && !inputs.destinationToken) {
+    errors.push({
+      field: "destination_token",
+      issue: "source_token provided but destination_token is missing",
+      current: "source_token present, destination_token missing",
+      missing: "destination_token",
+      suggestion:
+        "When using separate tokens for source and destination, provide both source_token and destination_token",
+    });
+  }
+
+  // Validate source repo
+  errors.push(
+    ...validateRepoAuth("source", inputs.sourceRepo, hasSSHAuth, hasTokenAuth)
+  );
+
+  // Validate destination repo
+  errors.push(
+    ...validateRepoAuth("destination", inputs.destinationRepo, hasSSHAuth, hasTokenAuth)
+  );
+
+  // Check for unused credentials (warnings only)
+  if (hasTokenAuth && isSSHUrl(inputs.sourceRepo) && isSSHUrl(inputs.destinationRepo)) {
+    warnings.push({
+      field: "github_token/github_app_*",
+      issue: "Token provided but both repos use SSH",
+      current: "Both repos are SSH-based",
+      unused: "github_token or github_app_*",
+      suggestion:
+        "Remove github_token and github_app_* inputs as SSH key is sufficient",
+    });
+  }
+
+  if (hasSSHAuth && isHTTPSUrl(inputs.sourceRepo) && isHTTPSUrl(inputs.destinationRepo)) {
+    warnings.push({
+      field: "ssh_key/ssh_key_path",
+      issue: "SSH key provided but both repos use HTTPS",
+      current: "Both repos are HTTPS-based",
+      unused: "ssh_key or ssh_key_path",
+      suggestion: "Remove SSH key inputs as github_token is sufficient",
+    });
+  }
+
+  // Check for incomplete GitHub App credentials
+  if (inputs.githubAppId && !inputs.githubAppPrivateKey) {
+    errors.push({
+      field: "github_app_private_key",
+      issue: "GitHub App ID provided but private key is missing",
+      current: "app_id provided, private_key missing",
+      missing: "github_app_private_key",
+      suggestion:
+        "Provide all three: github_app_id, github_app_private_key, github_app_installation_id",
+    });
+  }
+
+  if (inputs.githubAppId && !inputs.githubAppInstallationId) {
+    errors.push({
+      field: "github_app_installation_id",
+      issue: "GitHub App ID provided but installation ID is missing",
+      current: "app_id provided, installation_id missing",
+      missing: "github_app_installation_id",
+      suggestion:
+        "Provide all three: github_app_id, github_app_private_key, github_app_installation_id",
+    });
+  }
+
+  if (inputs.githubAppPrivateKey && !inputs.githubAppId) {
+    errors.push({
+      field: "github_app_id",
+      issue: "GitHub App private key provided but app ID is missing",
+      current: "private_key provided, app_id missing",
+      missing: "github_app_id",
+      suggestion:
+        "Provide all three: github_app_id, github_app_private_key, github_app_installation_id",
+    });
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings,
+    summary: {
+      sourceProtocol,
+      destProtocol,
+      hasTokenAuth,
+      hasSSHAuth,
+    },
+  };
+}
+
+// ===== FORMATTERS =====
+
+const ErrorFormatter = {
+  header() {
+    return (
+      "╔════════════════════════════════════════════════════════════╗\n" +
+      "║         AUTHENTICATION CONFIGURATION MISMATCH              ║\n" +
+      "╚════════════════════════════════════════════════════════════╝\n\n"
+    );
+  },
+
+  configuration(summary) {
+    return (
+      "📋 DETECTED CONFIGURATION:\n" +
+      `  • Source repo:      ${summary.sourceProtocol}\n` +
+      `  • Destination repo: ${summary.destProtocol}\n` +
+      `  • Token auth:       ${summary.hasTokenAuth ? "✓ Yes" : "✗ No"}\n` +
+      `  • SSH auth:         ${summary.hasSSHAuth ? "✓ Yes" : "✗ No"}\n\n`
+    );
+  },
+
+  issueItem(item, index) {
+    return (
+      `\n  ${index + 1}. ${item.issue}\n` +
+      `     Field: ${item.field}\n` +
+      `     Current: ${item.current}\n` +
+      `     ${item.missing ? `Missing: ${item.missing}` : `Unused: ${item.unused}`}\n` +
+      `     ✓ Fix: ${item.suggestion}\n`
+    );
+  },
+
+  errors(errorList) {
+    if (errorList.length === 0) return "";
+    return (
+      "❌ ERRORS (Fix required):\n" +
+      errorList.map((e, i) => this.issueItem(e, i)).join("") +
+      "\n"
+    );
+  },
+
+  warnings(warningList) {
+    if (warningList.length === 0) return "";
+    return (
+      "⚠️  WARNINGS (Optional cleanup):\n" +
+      warningList.map((w, i) => this.issueItem(w, i)).join("") +
+      "\n"
+    );
+  },
+
+  quickReference() {
+    return (
+      "📖 QUICK REFERENCE:\n" +
+      "  HTTPS URLs require:     github_token OR github_app_*\n" +
+      "  SSH URLs require:       ssh_key OR ssh_key_path\n" +
+      "  Mixed URLs require:     BOTH token AND ssh_key\n\n"
+    );
+  },
+
+  examples(summary) {
+    let text = "💡 EXAMPLES:\n";
+
+    if (summary.sourceProtocol === "HTTPS" || summary.destProtocol === "HTTPS") {
+      text +=
+        "  HTTPS example:\n" +
+        "    with:\n" +
+        "      source_repo: https://github.com/org/repo.git\n" +
+        "      github_token: ${{ secrets.GITHUB_TOKEN }}\n\n";
+    }
+
+    if (summary.sourceProtocol === "SSH" || summary.destProtocol === "SSH") {
+      text +=
+        "  SSH example:\n" +
+        "    with:\n" +
+        "      source_repo: git@github.com:org/repo.git\n" +
+        "      ssh_key: ${{ secrets.SSH_KEY }}\n\n";
+    }
+
+    text +=
+      "  Mixed example:\n" +
+      "    with:\n" +
+      "      source_repo: https://github.com/public/repo.git\n" +
+      "      destination_repo: git@internal-git.com:repo.git\n" +
+      "      github_token: ${{ secrets.GITHUB_TOKEN }}\n" +
+      "      ssh_key: ${{ secrets.SSH_KEY }}\n\n";
+
+    return text;
+  },
+
+  documentation() {
+    return "📚 See SSH_AUTHENTICATION.md and README.md for detailed guides\n";
+  },
+};
+
+/**
+ * Format validation errors as user-friendly messages
+ * @param {Object} validation - Validation result from validateAuthentication
+ * @returns {string} Formatted error message
+ */
+function formatValidationErrors(validation) {
+  if (validation.isValid && validation.warnings.length === 0) {
+    return null;
+  }
+
+  return (
+    ErrorFormatter.header() +
+    ErrorFormatter.configuration(validation.summary) +
+    ErrorFormatter.errors(validation.errors) +
+    ErrorFormatter.warnings(validation.warnings) +
+    ErrorFormatter.quickReference() +
+    ErrorFormatter.examples(validation.summary) +
+    ErrorFormatter.documentation()
+  );
+}
+
+/**
+ * Log validation result to core
+ * @param {Object} validation - Validation result
+ */
+function logValidationResult(validation) {
+  if (!validation.isValid) {
+    const formatted = formatValidationErrors(validation);
+    lib_core.error(formatted);
+  } else if (validation.warnings.length > 0) {
+    lib_core.warning("Authentication validation has warnings:\n" + formatValidationErrors(validation));
+  } else {
+    lib_core.info("✓ Authentication configuration is valid");
+  }
+}
+
+// EXTERNAL MODULE: external "fs"
+var external_fs_ = __nccwpck_require__(9896);
+// EXTERNAL MODULE: external "path"
+var external_path_ = __nccwpck_require__(6928);
+// EXTERNAL MODULE: external "os"
+var external_os_ = __nccwpck_require__(857);
+;// CONCATENATED MODULE: ./src/ssh-auth.js
+
+
+
+
+
+
+/**
+ * SSH Authentication Module
+ * Handles SSH key setup, validation, and git configuration for SSH-based authentication
+ */
+
+/**
+ * Read SSH-related inputs from GitHub Actions
+ * @returns {Object} SSH configuration
+ */
+function readSSHInputs() {
+  return {
+    sshKey: core.getInput("ssh_key"),
+    sshKeyPath: core.getInput("ssh_key_path"),
+    sshPassphrase: core.getInput("ssh_passphrase"),
+    sshKnownHostsPath: core.getInput("ssh_known_hosts_path"),
+    sshStrictHostKeyChecking: core.getInput("ssh_strict_host_key_checking") !== "false", // Default true
+  };
+}
+
+/**
+ * Detect if a URL is SSH-based
+ * @param {string} url - Repository URL
+ * @returns {boolean} True if URL uses SSH protocol
+ */
+function ssh_auth_isSSHUrl(url) {
+  // SSH URLs start with git@, ssh://, or use ssh protocol
+  return url.startsWith("git@") || url.startsWith("ssh://");
+}
+
+/**
+ * Detect which repositories use SSH
+ * @param {string} sourceRepo - Source repository URL
+ * @param {string} destinationRepo - Destination repository URL
+ * @returns {Object} SSH configuration for each repo
+ */
+function detectAuthenticationMethods(sourceRepo, destinationRepo) {
+  const sourceIsSSH = ssh_auth_isSSHUrl(sourceRepo);
+  const destinationIsSSH = ssh_auth_isSSHUrl(destinationRepo);
+
+  lib_core.debug(`Source repo SSH: ${sourceIsSSH} (${sourceRepo})`);
+  lib_core.debug(`Destination repo SSH: ${destinationIsSSH} (${destinationRepo})`);
+
+  return {
+    sourceIsSSH,
+    destinationIsSSH,
+    needsSSH: sourceIsSSH || destinationIsSSH,
+  };
+}
+
+/**
+ * Create SSH directory with proper permissions
+ * @returns {string} Path to SSH directory
+ */
+function setupSSHDirectory() {
+  const sshDir = external_path_.join(external_os_.homedir(), ".ssh");
+
+  if (!external_fs_.existsSync(sshDir)) {
+    lib_core.info("Creating .ssh directory...");
+    external_fs_.mkdirSync(sshDir, { mode: 0o700 });
+    lib_core.info("✓ .ssh directory created");
+  } else {
+    lib_core.debug(".ssh directory already exists");
+  }
+
+  // Ensure correct permissions
+  external_fs_.chmodSync(sshDir, 0o700);
+
+  return sshDir;
+}
+
+/**
+ * Write SSH key to file with proper permissions
+ * @param {string} sshKeyContent - SSH private key content
+ * @param {string} sshDir - SSH directory path
+ * @param {string} keyName - Name of the key file (default: id_rsa)
+ * @returns {string} Path to the key file
+ */
+function writeSSHKey(sshKeyContent, sshDir, keyName = "id_rsa") {
+  if (!sshKeyContent) {
+    throw new Error("SSH key content is required");
+  }
+
+  const keyPath = external_path_.join(sshDir, keyName);
+
+  lib_core.info(`Writing SSH key to ${keyName}...`);
+
+  // Handle keys with escaped newlines or base64 encoded
+  let keyContent = sshKeyContent;
+
+  // If key contains escaped newlines (\\n), replace with actual newlines
+  if (keyContent.includes("\\n")) {
+    keyContent = keyContent.replace(/\\n/g, "\n");
+  }
+
+  // If key is base64 encoded (no BEGIN/END markers), decode it
+  if (!keyContent.includes("BEGIN") && !keyContent.includes("END")) {
+    try {
+      keyContent = Buffer.from(keyContent, "base64").toString("utf-8");
+      lib_core.debug("SSH key was base64 encoded, decoded successfully");
+    } catch (error) {
+      lib_core.warning("Could not decode SSH key as base64, using as-is");
+    }
+  }
+
+  // Ensure key ends with newline
+  if (!keyContent.endsWith("\n")) {
+    keyContent += "\n";
+  }
+
+  // Write key to file
+  external_fs_.writeFileSync(keyPath, keyContent, { mode: 0o600 });
+  lib_core.info(`✓ SSH key written to ${keyName}`);
+
+  return keyPath;
+}
+
+/**
+ * Setup SSH config for hosts
+ * @param {string} sshDir - SSH directory path
+ */
+function setupSSHConfig(sshDir) {
+  const configPath = external_path_.join(sshDir, "config");
+
+  // SSH config for common hosts to improve performance and security
+  const sshConfig = `# Auto-generated by github-sync action
+Host github.com
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/id_rsa
+  StrictHostKeyChecking accept-new
+
+Host gitlab.com
+  HostName gitlab.com
+  User git
+  IdentityFile ~/.ssh/id_rsa
+  StrictHostKeyChecking accept-new
+
+Host gitea.*
+  User git
+  IdentityFile ~/.ssh/id_rsa
+  StrictHostKeyChecking accept-new
+
+Host gerrit.*
+  User git
+  IdentityFile ~/.ssh/id_rsa
+  StrictHostKeyChecking accept-new
+
+# Fallback for other hosts
+Host *
+  User git
+  IdentityFile ~/.ssh/id_rsa
+  StrictHostKeyChecking accept-new
+  AddKeysToAgent yes
+`;
+
+  if (!external_fs_.existsSync(configPath)) {
+    lib_core.info("Creating SSH config...");
+    external_fs_.writeFileSync(configPath, sshConfig, { mode: 0o600 });
+    lib_core.info("✓ SSH config created");
+  } else {
+    lib_core.debug("SSH config already exists");
+  }
+}
+
+/**
+ * Setup known hosts to avoid SSH prompts
+ * @param {string} sshDir - SSH directory path
+ * @param {string} customKnownHostsPathOrContent - Optional custom known_hosts file path or host keys content
+ */
+async function setupKnownHosts(sshDir, customKnownHostsPathOrContent) {
+  const knownHostsPath = external_path_.join(sshDir, "known_hosts");
+
+  lib_core.info("Setting up known_hosts...");
+
+  // Common default host keys
+  const defaultKnownHosts = [
+    'github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndgoebf+alrspvfHZEfEIiu1cOyT16CPrMdLvzexPn0DblIWXKc8NyVN++5c2lNB6+7aMg6i6RQaKL8IrKGcorfzi7EC4Jq9Nkz0f+5dn0AHqTJl1lUqhVl3xGrT+rwG88qtqqIvzlWPPC2bRDe7XSGIYvHbFqwCRuPvz0XZ2xZ5g+v96SxQ8wtLn0=',
+    'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl',
+    'github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQwcKllNydjgE8Z7mRFot2+kT7nWrniA9n+vj/weIonvg7E2nw8XByT31PdhznVA8phxWtNGgd+hF5Q4=',
+    'gitlab.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsj2bNKZm5AD5E1F2d5As+BltSrZRQJJZchreQvAxZSDA7HBFcqLHWXwpxhlnkqKaE5/+FvAZ3GNPiMaUL5yO7VD20A7yVjaSMzQyMA1+X9rpyWTRpnrHARkYvIygH8dHbXGIvQvIWnM7TCyNuTpVndHIlySRIJWMChBotauKpmZ5TZHhc5+5W/cCrc8DKw8SnAc8bUZAJXwKoExD7+Fe7zNx7UnLAEIjI+3l5+FfeKvIZ5F4Nm5+5p00a7tagvBXWwzrniA9n2Bp4w8v+VreLAQRK/E4xuchhughes28y7ElW9/4ub3ISTmRCv43LilBtvSoGWT8=',
+    'gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGV3/pHk5/IIJXci6ex23I9Q3irrKH+IlaWQSo/BBoD+',
+  ];
+
+  try {
+    let hostKeysContent = defaultKnownHosts.join("\n");
+
+    // If custom known hosts content is provided, append it
+    if (customKnownHostsPathOrContent) {
+      // Check if it's a file path: 
+      // - Contains '/' (Unix path) or '\' (Windows path)
+      // - Starts with '~' (home directory)
+      // - Is a single-line that looks like a path (no newlines and ends with a file extension or /)
+      const firstLine = customKnownHostsPathOrContent.split("\n")[0].trim();
+      const hasNewlines = customKnownHostsPathOrContent.includes("\n");
+      const isFilePath = 
+        (customKnownHostsPathOrContent.includes("/") || customKnownHostsPathOrContent.includes("\\")) &&
+        !hasNewlines &&
+        !firstLine.includes(" "); // SSH keys have spaces (hostname keytype hash)
+
+      if (isFilePath) {
+        // It's a file path - read from it
+        const expandedPath = customKnownHostsPathOrContent.startsWith("~") 
+          ? customKnownHostsPathOrContent.replace("~", external_os_.homedir())
+          : customKnownHostsPathOrContent;
+        
+        if (external_fs_.existsSync(expandedPath)) {
+          const customContent = external_fs_.readFileSync(expandedPath, "utf-8");
+          hostKeysContent += "\n" + customContent;
+          lib_core.debug(`Added custom known_hosts from file: ${expandedPath}`);
+        } else {
+          lib_core.warning(`Custom known_hosts file not found: ${expandedPath}`);
+        }
+      } else {
+        // It's content - treat as host keys (multi-line string or SSH key line)
+        hostKeysContent += "\n" + customKnownHostsPathOrContent;
+        lib_core.debug("Added custom known_hosts content from input");
+      }
+    }
+
+    lib_core.info("Creating known_hosts file...");
+    external_fs_.writeFileSync(knownHostsPath, hostKeysContent + "\n", {
+      mode: 0o600,
+    });
+    lib_core.info("✓ known_hosts file created");
+  } catch (error) {
+    lib_core.warning(`Could not setup known_hosts: ${error.message}`);
+  }
+}
+
+/**
+ * Start SSH agent and load keys
+ * @param {string} keyPath - Path to SSH key file
+ * @param {string} passphrase - Optional passphrase for encrypted keys
+ */
+async function startSSHAgent(keyPath, passphrase) {
+  lib_core.info("=== Setting up SSH Agent ===");
+
+  try {
+    // Check if SSH agent is already running
+    const agentSockEnv = process.env.SSH_AUTH_SOCK;
+    if (agentSockEnv) {
+      lib_core.info("SSH agent already running");
+    } else {
+      lib_core.info("Starting SSH agent...");
+      const output = await exec.getExecOutput("ssh-agent", ["-s"]);
+      // Parse and set environment variables from ssh-agent output
+      const lines = output.stdout.split("\n");
+      for (const line of lines) {
+        if (line.includes("SSH_AUTH_SOCK")) {
+          const match = line.match(/SSH_AUTH_SOCK=([^;]+)/);
+          if (match) {
+            process.env.SSH_AUTH_SOCK = match[1];
+          }
+        } else if (line.includes("SSH_AGENT_PID")) {
+          const match = line.match(/SSH_AGENT_PID=([^;]+)/);
+          if (match) {
+            process.env.SSH_AGENT_PID = match[1];
+          }
+        }
+      }
+      lib_core.info("✓ SSH agent started");
+    }
+
+    // Add key to agent
+    lib_core.info("Adding SSH key to agent...");
+    if (passphrase) {
+      // Use ssh-add with passphrase (via stdin)
+      await exec.exec("ssh-add", [keyPath], {
+        input: Buffer.from(passphrase + "\n"),
+        silent: true,
+      });
+    } else {
+      // Add key without passphrase
+      await exec.exec("ssh-add", [keyPath]);
+    }
+    lib_core.info("✓ SSH key added to agent");
+  } catch (error) {
+    lib_core.error(`SSH agent setup failed: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Validate SSH setup and connectivity
+ * @param {string} host - Host to test (default: github.com)
+ */
+async function validateSSHSetup(host = "github.com") {
+  lib_core.info("=== Validating SSH Setup ===");
+
+  try {
+    // Test SSH connection
+    lib_core.info(`Testing SSH connection to ${host}...`);
+    const output = await exec.getExecOutput("ssh", ["-v", "-T", `git@${host}`], {
+      ignoreReturnCode: true,
+    });
+
+    // SSH to git server typically returns exit code 1 but with successful auth
+    // We're looking for "successfully authenticated" in output
+    if (
+      output.stdout.includes("successfully authenticated") ||
+      output.stderr.includes("successfully authenticated") ||
+      output.stderr.includes("authenticated")
+    ) {
+      lib_core.info(`✓ SSH authentication successful for ${host}`);
+      return true;
+    } else if (output.stdout.includes("Permission denied") || output.stderr.includes("Permission denied")) {
+      lib_core.error(`SSH authentication failed for ${host}: Permission denied`);
+      return false;
+    } else {
+      lib_core.debug(`SSH test output: ${output.stdout}`);
+      lib_core.debug(`SSH test stderr: ${output.stderr}`);
+      // Some servers might not support -T flag, but connection might still work
+      lib_core.warning(`Could not fully validate SSH setup, proceeding with caution`);
+      return true;
+    }
+  } catch (error) {
+    lib_core.error(`SSH validation failed: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Full SSH setup orchestration
+ * @param {Object} sshConfig - SSH configuration object
+ * @param {string} sshConfig.sshKey - SSH private key content
+ * @param {string} sshConfig.sshKeyPath - Alternative SSH key file path
+ * @param {string} sshConfig.sshPassphrase - Passphrase for encrypted keys
+ * @param {string} sshConfig.sshKnownHostsPath - Custom known_hosts path
+ * @param {boolean} sshConfig.sshStrictHostKeyChecking - Enable strict host key checking
+ * @param {Array<string>} hostsToValidate - Optional SSH hosts to validate (will use first available)
+ */
+async function setupSSHAuthentication(sshConfig, hostsToValidate = ["github.com"]) {
+  // If no SSH key provided, assume SSH is already configured on runner
+  if (!sshConfig.sshKey && !sshConfig.sshKeyPath) {
+    lib_core.info("No SSH key provided, assuming SSH is already configured");
+    return;
+  }
+
+  lib_core.info("=== SSH Authentication Setup ===");
+
+  try {
+    // Setup SSH directory
+    const sshDir = setupSSHDirectory();
+
+    // Write SSH key to file
+    let keyPath;
+    if (sshConfig.sshKey) {
+      keyPath = writeSSHKey(sshConfig.sshKey, sshDir);
+    } else if (sshConfig.sshKeyPath) {
+      if (!external_fs_.existsSync(sshConfig.sshKeyPath)) {
+        throw new Error(`SSH key file not found: ${sshConfig.sshKeyPath}`);
+      }
+      keyPath = sshConfig.sshKeyPath;
+      lib_core.info(`Using SSH key from: ${keyPath}`);
+    }
+
+    // Setup SSH config
+    setupSSHConfig(sshDir);
+
+    // Setup known_hosts
+    await setupKnownHosts(sshDir, sshConfig.sshKnownHostsPath);
+
+    // Start SSH agent and load key
+    await startSSHAgent(keyPath, sshConfig.sshPassphrase);
+
+    // Validate SSH setup with all provided hosts
+    // Fail if ANY host fails validation
+    const validationResults = [];
+    for (const host of hostsToValidate) {
+      const isValid = await validateSSHSetup(host);
+      validationResults.push({ host, isValid });
+      if (!isValid) {
+        throw new Error(`SSH validation failed for host: ${host}`);
+      }
+    }
+
+    lib_core.info("✓ SSH authentication setup completed successfully");
+  } catch (error) {
+    lib_core.error(`SSH setup failed: ${error.message}`);
+    throw error;
+  }
+}
+
+;// CONCATENATED MODULE: ./src/index.js
+
+
+
 
 
 
 
 async function getAppInstallationToken(appId, privateKey, installationId) {
-  const auth = (0,_octokit_auth_app__WEBPACK_IMPORTED_MODULE_2__.createAppAuth)({
+  const auth = (0,dist_node.createAppAuth)({
     appId,
     privateKey,
     installationId,
@@ -41460,73 +42470,115 @@ async function getAppInstallationToken(appId, privateKey, installationId) {
 
 function readInputs() {
   return {
-    sourceRepo: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("source_repo", { required: true }),
-    sourceBranch: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("source_branch", { required: true }),
-    destinationRepo: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("destination_repo", { required: true }),
-    destinationBranch: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("destination_branch", { required: true }),
-    syncTags: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("sync_tags"),
-    sourceToken: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("source_token"),
-    syncAllBranches: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("sync_all_branches") === "true",
-    useMainAsFallback: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("use_main_as_fallback") !== "false", // Default to true
-    githubAppId: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("github_app_id"),
-    githubAppPrivateKey: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("github_app_private_key"),
-    githubAppInstallationId: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("github_app_installation_id"),
-    githubToken: _actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput("github_token"),
+    sourceRepo: lib_core.getInput("source_repo", { required: true }),
+    sourceBranch: lib_core.getInput("source_branch", { required: true }),
+    destinationRepo: lib_core.getInput("destination_repo", { required: true }),
+    destinationBranch: lib_core.getInput("destination_branch", { required: true }),
+    syncTags: lib_core.getInput("sync_tags"),
+    githubToken: lib_core.getInput("github_token"),
+    sourceToken: lib_core.getInput("source_token"),
+    destinationToken: lib_core.getInput("destination_token"),
+    syncAllBranches: lib_core.getInput("sync_all_branches") === "true",
+    useMainAsFallback: lib_core.getInput("use_main_as_fallback") !== "false", // Default to true
+    githubAppId: lib_core.getInput("github_app_id"),
+    githubAppPrivateKey: lib_core.getInput("github_app_private_key"),
+    githubAppInstallationId: lib_core.getInput("github_app_installation_id"),
+    // SSH inputs
+    sshKey: lib_core.getInput("ssh_key"),
+    sshKeyPath: lib_core.getInput("ssh_key_path"),
+    sshPassphrase: lib_core.getInput("ssh_passphrase"),
+    sshKnownHostsPath: lib_core.getInput("ssh_known_hosts_path"),
+    sshStrictHostKeyChecking: lib_core.getInput("ssh_strict_host_key_checking") !== "false",
   };
 }
 
+/**
+ * Extract hostname from SSH URL
+ * Supports: git@github.com:user/repo.git or ssh://github.com/user/repo.git
+ */
+function extractSSHHostname(url) {
+  if (!url) return null;
+  
+  if (url.startsWith("git@")) {
+    // Format: git@github.com:user/repo.git
+    const match = url.match(/git@([^:]+):/);
+    return match ? match[1] : null;
+  } else if (url.startsWith("ssh://")) {
+    // Format: ssh://github.com/user/repo.git
+    const match = url.match(/ssh:\/\/([^/]+)\//);
+    return match ? match[1] : null;
+  }
+  return null;
+}
+
 function logInputs(inputs) {
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Source: ${inputs.sourceRepo} (branch: ${inputs.sourceBranch})`);
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(
+  lib_core.info(`Source: ${inputs.sourceRepo} (branch: ${inputs.sourceBranch})`);
+  lib_core.info(
     `Destination: ${inputs.destinationRepo} (branch: ${inputs.destinationBranch})`,
   );
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Sync all branches: ${inputs.syncAllBranches}`);
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Sync tags: ${inputs.syncTags || "false"}`);
+  lib_core.info(`Sync all branches: ${inputs.syncAllBranches}`);
+  lib_core.info(`Sync tags: ${inputs.syncTags || "false"}`);
 }
 
 async function authenticate(inputs) {
-  if (inputs.githubToken) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Using GitHub Personal Access Token for authentication...");
+  // Check if using SSH authentication
+  const authMethods = detectAuthenticationMethods(inputs.sourceRepo, inputs.destinationRepo);
+
+  if (authMethods.needsSSH) {
+    lib_core.info("SSH authentication detected for one or more repositories");
+    // For SSH, token-based auth is not needed; return null
+    // SSH agent will handle authentication
+    return null;
+  }
+
+  // Token-based authentication (HTTPS)
+  // Priority: destination_token (if provided) > github_token > github_app > error
+  
+  if (inputs.destinationToken) {
+    lib_core.info("Using destination-specific Personal Access Token for HTTPS authentication...");
+    return inputs.destinationToken;
+  } else if (inputs.githubToken) {
+    lib_core.info("Using GitHub Personal Access Token for HTTPS authentication...");
     return inputs.githubToken;
   } else if (
     inputs.githubAppId &&
     inputs.githubAppPrivateKey &&
     inputs.githubAppInstallationId
   ) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Authenticating as GitHub App installation...");
+    lib_core.info("Authenticating as GitHub App installation...");
     const token = await getAppInstallationToken(
       inputs.githubAppId,
       inputs.githubAppPrivateKey,
       inputs.githubAppInstallationId,
     );
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("GitHub App token obtained successfully");
+    lib_core.info("GitHub App token obtained successfully");
     return token;
   } else {
     throw new Error(
-      "Either github_token (PAT) or github_app credentials (app_id, private_key, installation_id) must be provided",
+      "Authentication required: Either github_token (PAT), github_app credentials, or ssh_key must be provided",
     );
   }
 }
 
 async function setupGitConfig() {
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== Setting up Git Configuration ===");
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Configuring git user...");
+  lib_core.info("=== Setting up Git Configuration ===");
+  lib_core.info("Configuring git user...");
   try {
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", [
+    await exec.exec("git", [
       "config",
       "--global",
       "user.name",
       "github-sync-action",
     ]);
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", [
+    await exec.exec("git", [
       "config",
       "--global",
       "user.email",
       "github-sync@github.com",
     ]);
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Git user configured");
+    lib_core.info("✓ Git user configured");
   } catch (error) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.warning(`Could not set git config: ${error.message}`);
+    lib_core.warning(`Could not set git config: ${error.message}`);
   }
 }
 
@@ -41536,20 +42588,23 @@ function prepareUrls(
   destinationToken,
   sourceToken,
 ) {
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== Preparing URLs with Authentication ===");
+  lib_core.info("=== Preparing URLs with Authentication ===");
 
   let srcUrl = sourceRepo;
   let dstUrl = destinationRepo;
 
+  // Only embed tokens for HTTPS URLs; SSH URLs will use SSH agent
   if (destinationToken && dstUrl.startsWith("https://")) {
     dstUrl = dstUrl.replace(
       "https://",
       `https://x-access-token:${destinationToken}@`,
     );
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Destination URL prepared with authentication");
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.debug(
+    lib_core.info("✓ Destination URL prepared with HTTPS token authentication");
+    lib_core.debug(
       `Destination URL: ${dstUrl.replace(/x-access-token:.*@/, "x-access-token:***@")}`,
     );
+  } else if (ssh_auth_isSSHUrl(dstUrl)) {
+    lib_core.info("✓ Destination URL is SSH-based, will use SSH agent authentication");
   }
 
   // Use sourceToken if provided, otherwise fall back to destinationToken for source
@@ -41561,40 +42616,42 @@ function prepareUrls(
       `https://x-access-token:${effectiveSourceToken}@`,
     );
     if (sourceToken) {
-      _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Source URL prepared with explicit token");
+      lib_core.info("✓ Source URL prepared with explicit token");
     } else {
-      _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Source URL prepared with destination token");
+      lib_core.info("✓ Source URL prepared with destination token");
     }
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.debug(
+    lib_core.debug(
       `Source URL: ${srcUrl.replace(/x-access-token:.*@/, "x-access-token:***@")}`,
     );
+  } else if (ssh_auth_isSSHUrl(srcUrl)) {
+    lib_core.info("✓ Source URL is SSH-based, will use SSH agent authentication");
   }
 
   return { srcUrl, dstUrl };
 }
 
 async function cloneDestinationRepo(dstUrl) {
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== Cloning Destination Repository ===");
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(
+  lib_core.info("=== Cloning Destination Repository ===");
+  lib_core.info(
     `Cloning: ${dstUrl.replace(/x-access-token:.*@/, "x-access-token:***@")}`,
   );
   try {
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["clone", dstUrl, "repo"]);
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Destination repository cloned successfully");
+    await exec.exec("git", ["clone", dstUrl, "repo"]);
+    lib_core.info("✓ Destination repository cloned successfully");
   } catch (error) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.error(`✗ Clone failed: ${error.message}`);
+    lib_core.error(`✗ Clone failed: ${error.message}`);
     throw error;
   }
 
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Git repository initialized");
+  lib_core.info("Git repository initialized");
 }
 
 async function setupSourceRemote(srcUrl) {
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== Setting up Source Remote ===");
+  lib_core.info("=== Setting up Source Remote ===");
 
   let remotes = "";
   try {
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["remote"], {
+    await exec.exec("git", ["remote"], {
       listeners: {
         stdout: (data) => {
           remotes += data.toString();
@@ -41602,25 +42659,25 @@ async function setupSourceRemote(srcUrl) {
       },
     });
   } catch (error) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.warning("Could not list remotes");
+    lib_core.warning("Could not list remotes");
   }
 
   const remoteList = remotes.split(/\r?\n/).filter((line) => line.trim());
   const sourceRemoteExists = remoteList.includes("source");
 
   if (!sourceRemoteExists) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Adding source remote...");
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["remote", "add", "source", srcUrl]);
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Source remote added");
+    lib_core.info("Adding source remote...");
+    await exec.exec("git", ["remote", "add", "source", srcUrl]);
+    lib_core.info("✓ Source remote added");
   } else {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Updating existing source remote...");
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["remote", "set-url", "source", srcUrl]);
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Source remote updated");
+    lib_core.info("Updating existing source remote...");
+    await exec.exec("git", ["remote", "set-url", "source", srcUrl]);
+    lib_core.info("✓ Source remote updated");
   }
 
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Fetching from source...");
-  await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["fetch", "source"]);
-  _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Fetch from source completed");
+  lib_core.info("Fetching from source...");
+  await exec.exec("git", ["fetch", "source"]);
+  lib_core.info("✓ Fetch from source completed");
 }
 
 /**
@@ -41629,7 +42686,7 @@ async function setupSourceRemote(srcUrl) {
 async function getSourceBranches() {
   let stdout = "";
   try {
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["branch", "-r"], {
+    await exec.exec("git", ["branch", "-r"], {
       listeners: {
         stdout: (data) => {
           stdout += data.toString();
@@ -41637,7 +42694,7 @@ async function getSourceBranches() {
       },
     });
   } catch (error) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.error(`Could not list branches: ${error.message}`);
+    lib_core.error(`Could not list branches: ${error.message}`);
     throw error;
   }
 
@@ -41651,35 +42708,6 @@ async function getSourceBranches() {
 }
 
 /**
- * Helper: Get the default branch from source remote
- */
-async function getDefaultBranch() {
-  let stdout = "";
-  try {
-    await exec.exec("git", ["symbolic-ref", "refs/remotes/source/HEAD"], {
-      listeners: {
-        stdout: (data) => {
-          stdout += data.toString();
-        },
-      },
-    });
-  } catch (error) {
-    core.warning(`Could not determine default branch: ${error.message}`);
-    return null;
-  }
-
-  // Output format: "ref: refs/remotes/source/master"
-  const match = stdout.match(/refs\/remotes\/source\/(.+)$/);
-  if (match && match[1]) {
-    const defaultBranch = match[1].trim();
-    core.info(`Default branch detected: ${defaultBranch}`);
-    return defaultBranch;
-  }
-
-  return null;
-}
-
-/**
  * Helper: Try to find a fallback branch (main or master)
  */
 async function getTryFallbackBranch(availableBranches) {
@@ -41688,7 +42716,7 @@ async function getTryFallbackBranch(availableBranches) {
 
   for (const branch of fallbackOptions) {
     if (availableBranches.includes(branch)) {
-      _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Found fallback branch: ${branch}`);
+      lib_core.info(`Found fallback branch: ${branch}`);
       return branch;
     }
   }
@@ -41703,23 +42731,62 @@ async function syncBranches(
   useMainAsFallback,
 ) {
   if (syncAllBranches) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== Syncing All Branches ===");
+    lib_core.info("=== Syncing All Branches ===");
 
-    const branchNames = await getSourceBranches();
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Found ${branchNames.length} branches to sync`);
+    const sourceBranchNames = await getSourceBranches();
+    lib_core.info(`Found ${sourceBranchNames.length} branches in source to sync`);
 
-    for (const branch of branchNames) {
-      _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Syncing branch: ${branch}`);
-      await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", [
+    // Get all destination branches (excluding HEAD)
+    let stdout = "";
+    await exec.exec("git", ["branch", "-r"], {
+      listeners: {
+        stdout: (data) => {
+          stdout += data.toString();
+        },
+      },
+    });
+
+    const destinationBranches = stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.includes("HEAD") && line.startsWith("origin/"))
+      .map((line) => line.replace("origin/", ""));
+
+    lib_core.info(`Found ${destinationBranches.length} branches in destination`);
+
+    // Delete destination branches that don't exist in source
+    const branchesToDelete = destinationBranches.filter(
+      (branch) => !sourceBranchNames.includes(branch),
+    );
+
+    if (branchesToDelete.length > 0) {
+      lib_core.info(`Deleting ${branchesToDelete.length} destination-only branches...`);
+      for (const branch of branchesToDelete) {
+        try {
+          lib_core.info(`Deleting branch: ${branch}`);
+          await exec.exec("git", ["push", "origin", `--delete`, branch]);
+          lib_core.info(`✓ Branch deleted: ${branch}`);
+        } catch (error) {
+          lib_core.warning(`Could not delete branch ${branch}: ${error.message}`);
+        }
+      }
+    } else {
+      lib_core.info("No destination-only branches to delete");
+    }
+
+    // Push all source branches to destination
+    for (const branch of sourceBranchNames) {
+      lib_core.info(`Syncing branch: ${branch}`);
+      await exec.exec("git", [
         "push",
         "origin",
         `refs/remotes/source/${branch}:refs/heads/${branch}`,
         "--force",
       ]);
-      _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`✓ Branch synced: ${branch}`);
+      lib_core.info(`✓ Branch synced: ${branch}`);
     }
   } else {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== Syncing Single Branch ===");
+    lib_core.info("=== Syncing Single Branch ===");
 
     // Check available branches first
     const availableBranches = await getSourceBranches();
@@ -41727,14 +42794,14 @@ async function syncBranches(
 
     if (!availableBranches.includes(sourceBranch)) {
       if (useMainAsFallback) {
-        _actions_core__WEBPACK_IMPORTED_MODULE_0__.warning(
+        lib_core.warning(
           `Branch "${sourceBranch}" not found. Trying main or master...`,
         );
         const fallbackBranch = await getTryFallbackBranch(availableBranches);
 
         if (fallbackBranch) {
           actualSourceBranch = fallbackBranch;
-          _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`✓ Using fallback branch: ${fallbackBranch}`);
+          lib_core.info(`✓ Using fallback branch: ${fallbackBranch}`);
         } else {
           throw new Error(
             `Branch "${sourceBranch}" not found, and no fallback (main/master) available. Available branches: ${availableBranches.join(", ") || "none"}`,
@@ -41747,37 +42814,37 @@ async function syncBranches(
       }
     }
 
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Syncing branch: ${actualSourceBranch} → ${destinationBranch}`);
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", [
+    lib_core.info(`Syncing branch: ${actualSourceBranch} → ${destinationBranch}`);
+    await exec.exec("git", [
       "push",
       "origin",
       `refs/remotes/source/${actualSourceBranch}:refs/heads/${destinationBranch}`,
       "--force",
     ]);
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`✓ Branch synced: ${actualSourceBranch} → ${destinationBranch}`);
+    lib_core.info(`✓ Branch synced: ${actualSourceBranch} → ${destinationBranch}`);
   }
 }
 
 async function syncTags(syncTags) {
   if (syncTags === "true") {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== Syncing All Tags ===");
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Fetching tags...");
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["fetch", "source", "--tags"]);
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Tags fetched");
+    lib_core.info("=== Syncing All Tags ===");
+    lib_core.info("Fetching tags...");
+    await exec.exec("git", ["fetch", "source", "--tags"]);
+    lib_core.info("✓ Tags fetched");
 
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Pushing tags...");
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["push", "origin", "--tags", "--force"]);
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Tags pushed");
+    lib_core.info("Pushing tags...");
+    await exec.exec("git", ["push", "origin", "--tags", "--force"]);
+    lib_core.info("✓ Tags pushed");
   } else if (syncTags) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== Syncing Tags Matching Pattern ===");
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Pattern: ${syncTags}`);
+    lib_core.info("=== Syncing Tags Matching Pattern ===");
+    lib_core.info(`Pattern: ${syncTags}`);
 
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Fetching tags...");
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["fetch", "source", "--tags"]);
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("✓ Tags fetched");
+    lib_core.info("Fetching tags...");
+    await exec.exec("git", ["fetch", "source", "--tags"]);
+    lib_core.info("✓ Tags fetched");
 
     let stdout = "";
-    await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", ["tag"], {
+    await exec.exec("git", ["tag"], {
       listeners: {
         stdout: (data) => {
           stdout += data.toString();
@@ -41788,31 +42855,73 @@ async function syncTags(syncTags) {
     const allTags = stdout.split(/\r?\n/).filter((tag) => tag.trim());
     const matchingTags = allTags.filter((tag) => tag.match(syncTags));
 
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Found ${matchingTags.length} matching tags`);
+    lib_core.info(`Found ${matchingTags.length} matching tags`);
 
     for (const tag of matchingTags) {
       if (tag) {
-        _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`Pushing tag: ${tag}`);
-        await _actions_exec__WEBPACK_IMPORTED_MODULE_1__.exec("git", [
+        lib_core.info(`Pushing tag: ${tag}`);
+        await exec.exec("git", [
           "push",
           "origin",
           `refs/tags/${tag}:refs/tags/${tag}`,
           "--force",
         ]);
-        _actions_core__WEBPACK_IMPORTED_MODULE_0__.info(`✓ Tag pushed: ${tag}`);
+        lib_core.info(`✓ Tag pushed: ${tag}`);
       }
     }
   } else {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Tag syncing disabled");
+    lib_core.info("Tag syncing disabled");
   }
 }
 
 async function run() {
   try {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== GitHub Sync Action Started ===");
+    lib_core.info("=== GitHub Sync Action Started ===");
 
     const inputs = readInputs();
     logInputs(inputs);
+
+    // Validate authentication configuration early
+    const authValidation = validateAuthentication(inputs);
+    if (!authValidation.isValid) {
+      logValidationResult(authValidation);
+      throw new Error("Authentication configuration is invalid. See errors above.");
+    }
+    if (authValidation.warnings.length > 0) {
+      logValidationResult(authValidation);
+    }
+
+    // Setup SSH authentication if needed
+    const authMethods = detectAuthenticationMethods(inputs.sourceRepo, inputs.destinationRepo);
+    if (authMethods.needsSSH) {
+      const sshConfig = {
+        sshKey: inputs.sshKey,
+        sshKeyPath: inputs.sshKeyPath,
+        sshPassphrase: inputs.sshPassphrase,
+        sshKnownHostsPath: inputs.sshKnownHostsPath,
+        sshStrictHostKeyChecking: inputs.sshStrictHostKeyChecking,
+      };
+      
+      // Collect SSH hosts to validate
+      const hostsToValidate = [];
+      if (authMethods.sourceIsSSH) {
+        const sourceHost = extractSSHHostname(inputs.sourceRepo);
+        if (sourceHost) hostsToValidate.push(sourceHost);
+      }
+      if (authMethods.destinationIsSSH) {
+        const destHost = extractSSHHostname(inputs.destinationRepo);
+        if (destHost) hostsToValidate.push(destHost);
+      }
+      // Fallback to github.com if no SSH hosts found (shouldn't happen, but defensive)
+      if (hostsToValidate.length === 0) {
+        hostsToValidate.push("github.com");
+      }
+      
+      await setupSSHAuthentication(sshConfig, hostsToValidate);
+    }
+
+    // Detect if destination is Gerrit
+    const isDestinationGerrit = isGerritRepository(inputs.destinationRepo);
 
     const destinationToken = await authenticate(inputs);
 
@@ -41830,22 +42939,35 @@ async function run() {
 
     await setupSourceRemote(srcUrl);
 
-    await syncBranches(
-      inputs.sourceBranch,
-      inputs.destinationBranch,
-      inputs.syncAllBranches,
-      inputs.useMainAsFallback,
-    );
+    // Use Gerrit-specific or standard sync based on detection
+    if (isDestinationGerrit) {
+      logGerritInfo(inputs.sourceRepo, inputs.destinationRepo);
+      await syncBranchesGerrit(
+        inputs.sourceBranch,
+        inputs.destinationBranch,
+        inputs.syncAllBranches,
+        inputs.useMainAsFallback,
+      );
+      await syncTagsGerrit(inputs.syncTags);
+    } else {
+      await syncBranches(
+        inputs.sourceBranch,
+        inputs.destinationBranch,
+        inputs.syncAllBranches,
+        inputs.useMainAsFallback,
+      );
+      await syncTags(inputs.syncTags);
+    }
 
-    await syncTags(inputs.syncTags);
-
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("=== GitHub Sync Completed Successfully ===");
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.info("Sync complete!");
+    lib_core.info("=== GitHub Sync Completed Successfully ===");
+    lib_core.info("Sync complete!");
   } catch (error) {
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.error("=== GitHub Sync Failed ===");
-    _actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed(error.message);
+    lib_core.error("=== GitHub Sync Failed ===");
+    lib_core.setFailed(error.message);
   }
 }
 
 run();
 
+
+//# sourceMappingURL=index.js.map

@@ -44,6 +44,81 @@ You can authenticate using either:
 - Get your GitHub App ID, private key, and installation ID
 - Add these as repository secrets
 
+#### Option 3: SSH (For private/self-hosted repositories)
+
+- Generate an SSH key pair
+- Add the public key to your Git host
+- Add the private key as a repository secret
+- Use SSH URLs in your workflow
+
+### SSH Authentication - Key Features
+
+#### 1. Multiple SSH Key Input Methods
+
+```yaml
+# Method 1: Direct SSH key from secret
+ssh_key: ${{ secrets.SSH_KEY }}
+
+# Method 2: SSH key file path
+ssh_key_path: /home/runner/.ssh/id_rsa
+
+# Method 3: Encrypted SSH key with passphrase
+ssh_key: ${{ secrets.SSH_KEY }}
+ssh_passphrase: ${{ secrets.SSH_PASSPHRASE }}
+```
+
+#### 2. Flexible Key Format Support
+
+- **Raw OpenSSH private key** (with BEGIN/END markers)
+- **Escaped newlines** (\\n) from GitHub Secrets
+- **Base64 encoded** (automatically decoded)
+
+#### 3. Host Key Management
+
+The action includes pre-configured host keys for GitHub, GitLab, and other common platforms. For custom or self-hosted servers, use `ssh_known_hosts_path` to add additional host keys:
+
+```yaml
+# Option A: Provide multi-line host key content
+ssh_known_hosts_path: |
+  gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIpQnkbO+SD6nENKm1BvFp0K1QmVKqQELKsEKnnxKQS1
+  gerrit.company.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB...
+
+# Option B: Use an existing known_hosts file
+ssh_known_hosts_path: /path/to/known_hosts
+```
+
+To get host keys for your servers:
+
+```bash
+ssh-keyscan gitlab.com
+ssh-keyscan gerrit.company.com
+```
+
+#### 4. Automatic SSH Configuration
+
+- Pre-configured for GitHub, GitLab, Gitea, Gerrit
+- Prevents host verification prompts
+- Fallback config for custom hosts
+
+#### 4. URL-Based Authentication Detection
+
+```javascript
+// Automatically detects and routes:
+git@github.com:owner/repo.git      → SSH Agent
+https://github.com/owner/repo.git  → Token Auth
+ssh://gerrit.com/repo              → SSH Agent
+```
+
+#### 5. Mixed Authentication Support
+
+```yaml
+# Can use both SSH and HTTPS in same sync
+source_repo: "https://github.com/public/repo.git"      # HTTPS
+destination_repo: "git@internal-git.com:repo.git"      # SSH
+github_token: ${{ secrets.GITHUB_TOKEN }}              # For HTTPS
+ssh_key: ${{ secrets.SSH_KEY }}                        # For SSH
+```
+
 ### GitHub Actions - Using PAT
 
 ```yaml
@@ -113,16 +188,23 @@ jobs:
 - `destination_repo` (required): Full repository URL for the destination repository
 - `destination_branch` (required): Branch name to sync to
 - `sync_tags` (optional): `true` to sync all tags, regex pattern to sync matching tags, or omit to skip
-- `source_token` (optional): Access token for private source repos (required for private HTTPS repos without embedded credentials)
+- `source_token` (optional): Access token for private source repos (required for private HTTPS repos without embedded credentials). When provided with `destination_token`, enables different tokens for source and destination repos.
+- `destination_token` (optional): Access token specifically for destination repo. When provided, `source_token` is required. Enables using different credentials for source and destination repositories.
 - `sync_all_branches` (optional): `true` to sync all branches from source repo
 - `use_main_as_fallback` (optional): `true` (default) to fallback to `main` or `master` if specified branch not found, `false` for strict branch matching
 
 **Authentication (provide one of the following):**
 
-- `github_token` (optional): GitHub Personal Access Token (PAT) for HTTPS authentication
+- `github_token` (optional): GitHub Personal Access Token (PAT) used for both source and destination HTTPS repos if separate tokens not provided
 - `github_app_id`, `github_app_private_key`, `github_app_installation_id` (optional): GitHub App for HTTPS authentication
 
-> **Note**: For HTTPS URLs, provide either a `github_token` OR all three GitHub App parameters. SSH URLs don't require authentication if SSH keys are configured. The token will also be used for source repos if no `source_token` is provided.
+**For Separate Tokens Per Repository:**
+
+- `source_token`: PAT for source repo
+- `destination_token`: PAT for destination repo
+- Both required when using separate tokens for different repositories
+
+> **Note**: For HTTPS URLs, provide either a `github_token` OR all three GitHub App parameters OR use `source_token`/`destination_token` pair for separate credentials. SSH URLs don't require authentication if SSH keys are configured.
 
 ### Workflow Considerations
 
@@ -255,3 +337,99 @@ If `main` doesn't exist in source, automatically falls back to `master`.
     destination_branch: "main"
     github_token: ${{ secrets.GITLAB_TOKEN }}
 ```
+
+### Example 6: SSH with Single Host
+
+```yaml
+name: Sync with SSH
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: renan-alm/github-repo-sync@v2
+        with:
+          source_repo: "git@github.com:upstream/repo.git"
+          source_branch: "main"
+          destination_repo: "git@github.com:mirror/repo.git"
+          destination_branch: "main"
+          sync_tags: "true"
+          ssh_key: ${{ secrets.SSH_KEY }}
+```
+
+### Example 7: SSH with Multiple Hosts and Custom Known Hosts
+
+```yaml
+- uses: renan-alm/github-repo-sync@v2
+  with:
+    source_repo: "git@gitlab.com:org/source-repo.git"
+    source_branch: "develop"
+    destination_repo: "git@gerrit.company.com:destination-repo.git"
+    destination_branch: "develop"
+    ssh_key: ${{ secrets.SSH_KEY }}
+    ssh_known_hosts_path: |
+      gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIpQnkbO+SD6nENKm1BvFp0K1QmVKqQELKsEKnnxKQS1
+      gerrit.company.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB...
+```
+
+### Example 8: Mixed HTTPS and SSH
+
+```yaml
+# Use HTTPS for source, SSH for destination
+- uses: renan-alm/github-repo-sync@v2
+  with:
+    source_repo: "https://github.com/public/repo.git"
+    source_branch: "main"
+    destination_repo: "git@internal-git.company.com:repo.git"
+    destination_branch: "main"
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    ssh_key: ${{ secrets.SSH_KEY }}
+```
+
+### Example 9: SSH with Encrypted Key
+
+```yaml
+### Example 9: SSH with Encrypted Key
+
+```yaml
+- uses: renan-alm/github-repo-sync@v2
+  with:
+    source_repo: "git@github.com:owner/source.git"
+    source_branch: "main"
+    destination_repo: "git@github.com:owner/destination.git"
+    destination_branch: "main"
+    ssh_key: ${{ secrets.SSH_KEY }}
+    ssh_passphrase: ${{ secrets.SSH_PASSPHRASE }}
+```
+
+### Example 10: Different tokens for source and destination
+
+Sync from one platform with one token to another platform with a different token:
+
+```yaml
+# Sync from GitHub to GitLab with separate credentials
+- uses: renan-alm/github-repo-sync@v2
+  with:
+    source_repo: "https://github.com/org/github-repo.git"
+    source_branch: "main"
+    source_token: ${{ secrets.GITHUB_TOKEN }}
+    
+    destination_repo: "https://gitlab.com/org/gitlab-repo.git"
+    destination_branch: "main"
+    destination_token: ${{ secrets.GITLAB_TOKEN }}
+    
+    sync_tags: "true"
+```
+
+**When to use separate tokens:**
+
+- Syncing between different Git platforms (GitHub ↔ GitLab, GitHub ↔ Gitea, etc.)
+- Source and destination repos owned by different organizations
+- Different permission levels needed for each repository
+- Cross-tenant or cross-account synchronization
+
+⚠️ **Note**: When using `source_token` and `destination_token`, provide both or provide neither. Mix `source_token`/`destination_token` with `github_token` is not supported.
