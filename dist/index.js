@@ -41692,6 +41692,8 @@ function logGerritInfo(sourceRepo, destinationRepo) {
  * Provides comprehensive error checking and user guidance for authentication mismatches
  */
 
+// ===== PROTOCOL DETECTION =====
+
 /**
  * Check if URL is SSH-based
  * @param {string} url - Repository URL
@@ -41721,6 +41723,68 @@ function getProtocolType(url) {
   return "Unknown";
 }
 
+// ===== VALIDATION HELPERS =====
+
+/**
+ * Validate repo URL against available authentication
+ * @param {string} repoName - "source" or "destination" for error messages
+ * @param {string} repoUrl - Repository URL
+ * @param {boolean} hasSSHAuth - SSH authentication available
+ * @param {boolean} hasTokenAuth - Token authentication available
+ * @returns {Array} Array of error objects (empty if valid)
+ */
+function validateRepoAuth(repoName, repoUrl, hasSSHAuth, hasTokenAuth) {
+  const errors = [];
+  const isSSH = isSSHUrl(repoUrl);
+  const isHTTPS = isHTTPSUrl(repoUrl);
+
+  // SSH repo requires SSH auth
+  if (isSSH && !hasSSHAuth) {
+    errors.push({
+      field: `${repoName}_repo`,
+      issue: `${repoName === "source" ? "Source" : "Destination"} repo uses SSH but no SSH key provided`,
+      current: `${repoName === "source" ? "Source" : "Destination"}: ${repoUrl}`,
+      missing: "ssh_key or ssh_key_path",
+      suggestion: "Provide ssh_key (from secret) or ssh_key_path (from runner)",
+    });
+  }
+
+  // SSH repo with wrong auth type (token instead of SSH)
+  if (isSSH && hasTokenAuth && !hasSSHAuth) {
+    errors.push({
+      field: `${repoName}_repo + github_token`,
+      issue: `${repoName === "source" ? "Source" : "Destination"} repo uses SSH but token is provided instead of SSH key`,
+      current: `${repoName === "source" ? "Source" : "Destination"}: ${repoUrl} (SSH) + github_token provided`,
+      wrong: "Token auth cannot be used with SSH URLs",
+      suggestion: `Either (1) provide ssh_key for SSH, OR (2) convert ${repoName}_repo to HTTPS: https://github.com/org/repo.git`,
+    });
+  }
+
+  // HTTPS repo requires token auth
+  if (isHTTPS && !hasTokenAuth) {
+    errors.push({
+      field: `${repoName}_repo`,
+      issue: `${repoName === "source" ? "Source" : "Destination"} repo uses HTTPS but no token provided`,
+      current: `${repoName === "source" ? "Source" : "Destination"}: ${repoUrl}`,
+      missing: "github_token or github_app_*",
+      suggestion: "Provide github_token (PAT) or GitHub App credentials (app_id, private_key, installation_id)",
+    });
+  }
+
+  // HTTPS repo with wrong auth type (SSH instead of token)
+  if (isHTTPS && hasSSHAuth && !hasTokenAuth) {
+    errors.push({
+      field: `${repoName}_repo + ssh_key`,
+      issue: `${repoName === "source" ? "Source" : "Destination"} repo uses HTTPS but SSH key is provided instead of token`,
+      current: `${repoName === "source" ? "Source" : "Destination"}: ${repoUrl} (HTTPS) + ssh_key provided`,
+      wrong: "SSH auth cannot be used with HTTPS URLs",
+      suggestion: `Either (1) provide github_token for HTTPS, OR (2) convert ${repoName}_repo to SSH: git@github.com:org/repo.git`,
+    });
+  }
+
+  return errors;
+}
+
 /**
  * Validate authentication configuration
  * Checks for mismatches between URL protocols and provided credentials
@@ -41747,14 +41811,8 @@ function validateAuthentication(inputs) {
       inputs.githubAppInstallationId);
   const hasSSHAuth = !!inputs.sshKey || !!inputs.sshKeyPath;
 
-  // Check source repo
-  const sourceIsSSH = isSSHUrl(inputs.sourceRepo);
-  const sourceIsHTTPS = isHTTPSUrl(inputs.sourceRepo);
+  // Check repos
   const sourceProtocol = getProtocolType(inputs.sourceRepo);
-
-  // Check destination repo
-  const destIsSSH = isSSHUrl(inputs.destinationRepo);
-  const destIsHTTPS = isHTTPSUrl(inputs.destinationRepo);
   const destProtocol = getProtocolType(inputs.destinationRepo);
 
   // Log detected configuration
@@ -41763,54 +41821,18 @@ function validateAuthentication(inputs) {
   lib_core.debug(`Token auth available: ${hasTokenAuth}`);
   lib_core.debug(`SSH auth available: ${hasSSHAuth}`);
 
-  // ===== VALIDATION LOGIC =====
+  // Validate source repo
+  errors.push(
+    ...validateRepoAuth("source", inputs.sourceRepo, hasSSHAuth, hasTokenAuth)
+  );
 
-  // 1. Source repo validation
-  if (sourceIsHTTPS && !hasTokenAuth) {
-    errors.push({
-      field: "source_repo",
-      issue: `Source repo uses HTTPS but no token provided`,
-      current: `Source: ${inputs.sourceRepo}`,
-      missing: "github_token or github_app_*",
-      suggestion:
-        "Provide github_token (PAT) or GitHub App credentials (app_id, private_key, installation_id)",
-    });
-  }
+  // Validate destination repo
+  errors.push(
+    ...validateRepoAuth("destination", inputs.destinationRepo, hasSSHAuth, hasTokenAuth)
+  );
 
-  if (sourceIsSSH && !hasSSHAuth) {
-    errors.push({
-      field: "source_repo",
-      issue: `Source repo uses SSH but no SSH key provided`,
-      current: `Source: ${inputs.sourceRepo}`,
-      missing: "ssh_key or ssh_key_path",
-      suggestion: "Provide ssh_key (from secret) or ssh_key_path (from runner)",
-    });
-  }
-
-  // 2. Destination repo validation
-  if (destIsHTTPS && !hasTokenAuth) {
-    errors.push({
-      field: "destination_repo",
-      issue: `Destination repo uses HTTPS but no token provided`,
-      current: `Destination: ${inputs.destinationRepo}`,
-      missing: "github_token or github_app_*",
-      suggestion:
-        "Provide github_token (PAT) or GitHub App credentials (app_id, private_key, installation_id)",
-    });
-  }
-
-  if (destIsSSH && !hasSSHAuth) {
-    errors.push({
-      field: "destination_repo",
-      issue: `Destination repo uses SSH but no SSH key provided`,
-      current: `Destination: ${inputs.destinationRepo}`,
-      missing: "ssh_key or ssh_key_path",
-      suggestion: "Provide ssh_key (from secret) or ssh_key_path (from runner)",
-    });
-  }
-
-  // 3. Check for unused credentials
-  if (hasTokenAuth && sourceIsSSH && destIsSSH) {
+  // Check for unused credentials (warnings only)
+  if (hasTokenAuth && isSSHUrl(inputs.sourceRepo) && isSSHUrl(inputs.destinationRepo)) {
     warnings.push({
       field: "github_token/github_app_*",
       issue: "Token provided but both repos use SSH",
@@ -41821,7 +41843,7 @@ function validateAuthentication(inputs) {
     });
   }
 
-  if (hasSSHAuth && sourceIsHTTPS && destIsHTTPS) {
+  if (hasSSHAuth && isHTTPSUrl(inputs.sourceRepo) && isHTTPSUrl(inputs.destinationRepo)) {
     warnings.push({
       field: "ssh_key/ssh_key_path",
       issue: "SSH key provided but both repos use HTTPS",
@@ -41831,7 +41853,7 @@ function validateAuthentication(inputs) {
     });
   }
 
-  // 4. Check for incomplete GitHub App credentials
+  // Check for incomplete GitHub App credentials
   if (inputs.githubAppId && !inputs.githubAppPrivateKey) {
     errors.push({
       field: "github_app_private_key",
@@ -41878,6 +41900,99 @@ function validateAuthentication(inputs) {
   };
 }
 
+// ===== FORMATTERS =====
+
+const ErrorFormatter = {
+  header() {
+    return (
+      "╔════════════════════════════════════════════════════════════╗\n" +
+      "║         AUTHENTICATION CONFIGURATION MISMATCH              ║\n" +
+      "╚════════════════════════════════════════════════════════════╝\n\n"
+    );
+  },
+
+  configuration(summary) {
+    return (
+      "📋 DETECTED CONFIGURATION:\n" +
+      `  • Source repo:      ${summary.sourceProtocol}\n` +
+      `  • Destination repo: ${summary.destProtocol}\n` +
+      `  • Token auth:       ${summary.hasTokenAuth ? "✓ Yes" : "✗ No"}\n` +
+      `  • SSH auth:         ${summary.hasSSHAuth ? "✓ Yes" : "✗ No"}\n\n`
+    );
+  },
+
+  issueItem(item, index) {
+    return (
+      `\n  ${index + 1}. ${item.issue}\n` +
+      `     Field: ${item.field}\n` +
+      `     Current: ${item.current}\n` +
+      `     ${item.missing ? `Missing: ${item.missing}` : `Unused: ${item.unused}`}\n` +
+      `     ✓ Fix: ${item.suggestion}\n`
+    );
+  },
+
+  errors(errorList) {
+    if (errorList.length === 0) return "";
+    return (
+      "❌ ERRORS (Fix required):\n" +
+      errorList.map((e, i) => this.issueItem(e, i)).join("") +
+      "\n"
+    );
+  },
+
+  warnings(warningList) {
+    if (warningList.length === 0) return "";
+    return (
+      "⚠️  WARNINGS (Optional cleanup):\n" +
+      warningList.map((w, i) => this.issueItem(w, i)).join("") +
+      "\n"
+    );
+  },
+
+  quickReference() {
+    return (
+      "📖 QUICK REFERENCE:\n" +
+      "  HTTPS URLs require:     github_token OR github_app_*\n" +
+      "  SSH URLs require:       ssh_key OR ssh_key_path\n" +
+      "  Mixed URLs require:     BOTH token AND ssh_key\n\n"
+    );
+  },
+
+  examples(summary) {
+    let text = "💡 EXAMPLES:\n";
+
+    if (summary.sourceProtocol === "HTTPS" || summary.destProtocol === "HTTPS") {
+      text +=
+        "  HTTPS example:\n" +
+        "    with:\n" +
+        "      source_repo: https://github.com/org/repo.git\n" +
+        "      github_token: ${{ secrets.GITHUB_TOKEN }}\n\n";
+    }
+
+    if (summary.sourceProtocol === "SSH" || summary.destProtocol === "SSH") {
+      text +=
+        "  SSH example:\n" +
+        "    with:\n" +
+        "      source_repo: git@github.com:org/repo.git\n" +
+        "      ssh_key: ${{ secrets.SSH_KEY }}\n\n";
+    }
+
+    text +=
+      "  Mixed example:\n" +
+      "    with:\n" +
+      "      source_repo: https://github.com/public/repo.git\n" +
+      "      destination_repo: git@internal-git.com:repo.git\n" +
+      "      github_token: ${{ secrets.GITHUB_TOKEN }}\n" +
+      "      ssh_key: ${{ secrets.SSH_KEY }}\n\n";
+
+    return text;
+  },
+
+  documentation() {
+    return "📚 See SSH_AUTHENTICATION.md and README.md for detailed guides\n";
+  },
+};
+
 /**
  * Format validation errors as user-friendly messages
  * @param {Object} validation - Validation result from validateAuthentication
@@ -41888,79 +42003,15 @@ function formatValidationErrors(validation) {
     return null;
   }
 
-  let message = "";
-
-  // Add summary
-  message += "╔════════════════════════════════════════════════════════════╗\n";
-  message += "║         AUTHENTICATION CONFIGURATION MISMATCH              ║\n";
-  message += "╚════════════════════════════════════════════════════════════╝\n\n";
-
-  // Add detected configuration
-  message += "📋 DETECTED CONFIGURATION:\n";
-  message += `  • Source repo:      ${validation.summary.sourceProtocol}\n`;
-  message += `  • Destination repo: ${validation.summary.destProtocol}\n`;
-  message += `  • Token auth:       ${validation.summary.hasTokenAuth ? "✓ Yes" : "✗ No"}\n`;
-  message += `  • SSH auth:         ${validation.summary.hasSSHAuth ? "✓ Yes" : "✗ No"}\n\n`;
-
-  // Add errors
-  if (validation.errors.length > 0) {
-    message += "❌ ERRORS (Fix required):\n";
-    validation.errors.forEach((error, index) => {
-      message += `\n  ${index + 1}. ${error.issue}\n`;
-      message += `     Field: ${error.field}\n`;
-      message += `     Current: ${error.current}\n`;
-      message += `     Missing: ${error.missing}\n`;
-      message += `     ✓ Fix: ${error.suggestion}\n`;
-    });
-    message += "\n";
-  }
-
-  // Add warnings
-  if (validation.warnings.length > 0) {
-    message += "⚠️  WARNINGS (Optional cleanup):\n";
-    validation.warnings.forEach((warning, index) => {
-      message += `\n  ${index + 1}. ${warning.issue}\n`;
-      message += `     Field: ${warning.field}\n`;
-      message += `     Current: ${warning.current}\n`;
-      message += `     Unused: ${warning.unused}\n`;
-      message += `     ✓ Fix: ${warning.suggestion}\n`;
-    });
-    message += "\n";
-  }
-
-  // Add quick reference
-  message += "📖 QUICK REFERENCE:\n";
-  message += "  HTTPS URLs require:     github_token OR github_app_*\n";
-  message += "  SSH URLs require:       ssh_key OR ssh_key_path\n";
-  message += "  Mixed URLs require:     BOTH token AND ssh_key\n\n";
-
-  // Add examples
-  message += "💡 EXAMPLES:\n";
-  if (validation.summary.sourceProtocol === "HTTPS" ||
-      validation.summary.destProtocol === "HTTPS") {
-    message += "  HTTPS example:\n";
-    message += "    with:\n";
-    message += "      source_repo: https://github.com/org/repo.git\n";
-    message += "      github_token: ${{ secrets.GITHUB_TOKEN }}\n\n";
-  }
-  if (validation.summary.sourceProtocol === "SSH" ||
-      validation.summary.destProtocol === "SSH") {
-    message += "  SSH example:\n";
-    message += "    with:\n";
-    message += "      source_repo: git@github.com:org/repo.git\n";
-    message += "      ssh_key: ${{ secrets.SSH_KEY }}\n\n";
-  }
-  message += "  Mixed example:\n";
-  message += "    with:\n";
-  message += "      source_repo: https://github.com/public/repo.git\n";
-  message += "      destination_repo: git@internal-git.com:repo.git\n";
-  message += "      github_token: ${{ secrets.GITHUB_TOKEN }}\n";
-  message += "      ssh_key: ${{ secrets.SSH_KEY }}\n\n";
-
-  // Add link to documentation
-  message += "📚 See SSH_AUTHENTICATION.md and README.md for detailed guides\n";
-
-  return message;
+  return (
+    ErrorFormatter.header() +
+    ErrorFormatter.configuration(validation.summary) +
+    ErrorFormatter.errors(validation.errors) +
+    ErrorFormatter.warnings(validation.warnings) +
+    ErrorFormatter.quickReference() +
+    ErrorFormatter.examples(validation.summary) +
+    ErrorFormatter.documentation()
+  );
 }
 
 /**
