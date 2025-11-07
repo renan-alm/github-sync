@@ -41445,7 +41445,7 @@ var __webpack_exports__ = {};
 // EXTERNAL MODULE: ./node_modules/@actions/core/lib/core.js
 var lib_core = __nccwpck_require__(7484);
 // EXTERNAL MODULE: ./node_modules/@actions/exec/lib/exec.js
-var lib_exec = __nccwpck_require__(5236);
+var exec = __nccwpck_require__(5236);
 // EXTERNAL MODULE: ./node_modules/@octokit/auth-app/dist-node/index.js
 var dist_node = __nccwpck_require__(8594);
 ;// CONCATENATED MODULE: ./src/gerrit.js
@@ -41504,7 +41504,7 @@ async function syncBranchesGerrit(
       try {
         // Push to refs/for/* instead of refs/heads/*
         // This creates a change/review in Gerrit instead of direct push
-        await lib_exec.exec("git", [
+        await exec.exec("git", [
           "push",
           "origin",
           `refs/remotes/source/${branch}:refs/for/${branch}`,
@@ -41551,7 +41551,7 @@ async function syncBranchesGerrit(
     lib_core.info(
       `Syncing branch to Gerrit review queue: ${actualSourceBranch} → ${destinationBranch}`,
     );
-    await lib_exec.exec("git", [
+    await exec.exec("git", [
       "push",
       "origin",
       `refs/remotes/source/${actualSourceBranch}:refs/for/${destinationBranch}`,
@@ -41569,7 +41569,7 @@ async function syncBranchesGerrit(
 async function getSourceBranchesGerrit() {
   let stdout = "";
   try {
-    await lib_exec.exec("git", ["branch", "-r"], {
+    await exec.exec("git", ["branch", "-r"], {
       listeners: {
         stdout: (data) => {
           stdout += data.toString();
@@ -41621,11 +41621,11 @@ async function syncTagsGerrit(syncTags) {
     lib_core.info("=== Syncing All Tags to Gerrit ===");
     lib_core.info("Fetching tags...");
     try {
-      await lib_exec.exec("git", ["fetch", "source", "--tags"]);
+      await exec.exec("git", ["fetch", "source", "--tags"]);
       lib_core.info("✓ Tags fetched");
 
       lib_core.info("Pushing tags to Gerrit...");
-      await lib_exec.exec("git", ["push", "origin", "--tags", "--force"]);
+      await exec.exec("git", ["push", "origin", "--tags", "--force"]);
       lib_core.info("✓ Tags pushed to Gerrit");
     } catch (error) {
       lib_core.warning(`⚠ Tag sync failed: ${error.message}`);
@@ -41636,11 +41636,11 @@ async function syncTagsGerrit(syncTags) {
 
     lib_core.info("Fetching tags...");
     try {
-      await lib_exec.exec("git", ["fetch", "source", "--tags"]);
+      await exec.exec("git", ["fetch", "source", "--tags"]);
       lib_core.info("✓ Tags fetched");
 
       let stdout = "";
-      await lib_exec.exec("git", ["tag"], {
+      await exec.exec("git", ["tag"], {
         listeners: {
           stdout: (data) => {
             stdout += data.toString();
@@ -41656,7 +41656,7 @@ async function syncTagsGerrit(syncTags) {
       for (const tag of matchingTags) {
         if (tag) {
           lib_core.info(`Pushing tag to Gerrit: ${tag}`);
-          await lib_exec.exec("git", [
+          await exec.exec("git", [
             "push",
             "origin",
             `refs/tags/${tag}:refs/tags/${tag}`,
@@ -42304,7 +42304,7 @@ async function startSSHAgent(keyPath, passphrase) {
       lib_core.info("SSH agent already running");
     } else {
       lib_core.info("Starting SSH agent...");
-      const output = await lib_exec.getExecOutput("ssh-agent", ["-s"]);
+      const output = await exec.getExecOutput("ssh-agent", ["-s"]);
       // Parse and set environment variables from ssh-agent output
       const lines = output.stdout.split("\n");
       for (const line of lines) {
@@ -42327,13 +42327,13 @@ async function startSSHAgent(keyPath, passphrase) {
     lib_core.info("Adding SSH key to agent...");
     if (passphrase) {
       // Use ssh-add with passphrase (via stdin)
-      await lib_exec.exec("ssh-add", [keyPath], {
+      await exec.exec("ssh-add", [keyPath], {
         input: Buffer.from(passphrase + "\n"),
         silent: true,
       });
     } else {
       // Add key without passphrase
-      await lib_exec.exec("ssh-add", [keyPath]);
+      await exec.exec("ssh-add", [keyPath]);
     }
     lib_core.info("✓ SSH key added to agent");
   } catch (error) {
@@ -42352,7 +42352,7 @@ async function validateSSHSetup(host = "github.com") {
   try {
     // Test SSH connection
     lib_core.info(`Testing SSH connection to ${host}...`);
-    const output = await lib_exec.getExecOutput("ssh", ["-v", "-T", `git@${host}`], {
+    const output = await exec.getExecOutput("ssh", ["-v", "-T", `git@${host}`], {
       ignoreReturnCode: true,
     });
 
@@ -42557,13 +42557,13 @@ async function setupGitConfig() {
   lib_core.info("=== Setting up Git Configuration ===");
   lib_core.info("Configuring git user...");
   try {
-    await lib_exec.exec("git", [
+    await exec.exec("git", [
       "config",
       "--global",
       "user.name",
       "github-sync-action",
     ]);
-    await lib_exec.exec("git", [
+    await exec.exec("git", [
       "config",
       "--global",
       "user.email",
@@ -42629,7 +42629,7 @@ async function cloneDestinationRepo(dstUrl) {
     `Cloning: ${dstUrl.replace(/x-access-token:.*@/, "x-access-token:***@")}`,
   );
   try {
-    await lib_exec.exec("git", ["clone", dstUrl, "repo"]);
+    await exec.exec("git", ["clone", dstUrl, "repo"]);
     lib_core.info("✓ Destination repository cloned successfully");
   } catch (error) {
     lib_core.error(`✗ Clone failed: ${error.message}`);
@@ -42644,7 +42644,7 @@ async function setupSourceRemote(srcUrl) {
 
   let remotes = "";
   try {
-    await lib_exec.exec("git", ["remote"], {
+    await exec.exec("git", ["remote"], {
       listeners: {
         stdout: (data) => {
           remotes += data.toString();
@@ -42660,16 +42660,16 @@ async function setupSourceRemote(srcUrl) {
 
   if (!sourceRemoteExists) {
     lib_core.info("Adding source remote...");
-    await lib_exec.exec("git", ["remote", "add", "source", srcUrl]);
+    await exec.exec("git", ["remote", "add", "source", srcUrl]);
     lib_core.info("✓ Source remote added");
   } else {
     lib_core.info("Updating existing source remote...");
-    await lib_exec.exec("git", ["remote", "set-url", "source", srcUrl]);
+    await exec.exec("git", ["remote", "set-url", "source", srcUrl]);
     lib_core.info("✓ Source remote updated");
   }
 
   lib_core.info("Fetching from source...");
-  await lib_exec.exec("git", ["fetch", "source"]);
+  await exec.exec("git", ["fetch", "source"]);
   lib_core.info("✓ Fetch from source completed");
 }
 
@@ -42679,7 +42679,7 @@ async function setupSourceRemote(srcUrl) {
 async function getSourceBranches() {
   let stdout = "";
   try {
-    await lib_exec.exec("git", ["branch", "-r"], {
+    await exec.exec("git", ["branch", "-r"], {
       listeners: {
         stdout: (data) => {
           stdout += data.toString();
@@ -42698,35 +42698,6 @@ async function getSourceBranches() {
     .map((line) => line.replace("source/", ""));
 
   return branchNames;
-}
-
-/**
- * Helper: Get the default branch from source remote
- */
-async function getDefaultBranch() {
-  let stdout = "";
-  try {
-    await exec.exec("git", ["symbolic-ref", "refs/remotes/source/HEAD"], {
-      listeners: {
-        stdout: (data) => {
-          stdout += data.toString();
-        },
-      },
-    });
-  } catch (error) {
-    core.warning(`Could not determine default branch: ${error.message}`);
-    return null;
-  }
-
-  // Output format: "ref: refs/remotes/source/master"
-  const match = stdout.match(/refs\/remotes\/source\/(.+)$/);
-  if (match && match[1]) {
-    const defaultBranch = match[1].trim();
-    core.info(`Default branch detected: ${defaultBranch}`);
-    return defaultBranch;
-  }
-
-  return null;
 }
 
 /**
@@ -42760,7 +42731,7 @@ async function syncBranches(
 
     // Get all destination branches (excluding HEAD)
     let stdout = "";
-    await lib_exec.exec("git", ["branch", "-r"], {
+    await exec.exec("git", ["branch", "-r"], {
       listeners: {
         stdout: (data) => {
           stdout += data.toString();
@@ -42786,7 +42757,7 @@ async function syncBranches(
       for (const branch of branchesToDelete) {
         try {
           lib_core.info(`Deleting branch: ${branch}`);
-          await lib_exec.exec("git", ["push", "origin", `--delete`, branch]);
+          await exec.exec("git", ["push", "origin", `--delete`, branch]);
           lib_core.info(`✓ Branch deleted: ${branch}`);
         } catch (error) {
           lib_core.warning(`Could not delete branch ${branch}: ${error.message}`);
@@ -42799,7 +42770,7 @@ async function syncBranches(
     // Push all source branches to destination
     for (const branch of sourceBranchNames) {
       lib_core.info(`Syncing branch: ${branch}`);
-      await lib_exec.exec("git", [
+      await exec.exec("git", [
         "push",
         "origin",
         `refs/remotes/source/${branch}:refs/heads/${branch}`,
@@ -42837,7 +42808,7 @@ async function syncBranches(
     }
 
     lib_core.info(`Syncing branch: ${actualSourceBranch} → ${destinationBranch}`);
-    await lib_exec.exec("git", [
+    await exec.exec("git", [
       "push",
       "origin",
       `refs/remotes/source/${actualSourceBranch}:refs/heads/${destinationBranch}`,
@@ -42851,22 +42822,22 @@ async function syncTags(syncTags) {
   if (syncTags === "true") {
     lib_core.info("=== Syncing All Tags ===");
     lib_core.info("Fetching tags...");
-    await lib_exec.exec("git", ["fetch", "source", "--tags"]);
+    await exec.exec("git", ["fetch", "source", "--tags"]);
     lib_core.info("✓ Tags fetched");
 
     lib_core.info("Pushing tags...");
-    await lib_exec.exec("git", ["push", "origin", "--tags", "--force"]);
+    await exec.exec("git", ["push", "origin", "--tags", "--force"]);
     lib_core.info("✓ Tags pushed");
   } else if (syncTags) {
     lib_core.info("=== Syncing Tags Matching Pattern ===");
     lib_core.info(`Pattern: ${syncTags}`);
 
     lib_core.info("Fetching tags...");
-    await lib_exec.exec("git", ["fetch", "source", "--tags"]);
+    await exec.exec("git", ["fetch", "source", "--tags"]);
     lib_core.info("✓ Tags fetched");
 
     let stdout = "";
-    await lib_exec.exec("git", ["tag"], {
+    await exec.exec("git", ["tag"], {
       listeners: {
         stdout: (data) => {
           stdout += data.toString();
@@ -42882,7 +42853,7 @@ async function syncTags(syncTags) {
     for (const tag of matchingTags) {
       if (tag) {
         lib_core.info(`Pushing tag: ${tag}`);
-        await lib_exec.exec("git", [
+        await exec.exec("git", [
           "push",
           "origin",
           `refs/tags/${tag}:refs/tags/${tag}`,

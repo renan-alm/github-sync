@@ -268,35 +268,6 @@ async function getSourceBranches() {
 }
 
 /**
- * Helper: Get the default branch from source remote
- */
-async function getDefaultBranch() {
-  let stdout = "";
-  try {
-    await exec.exec("git", ["symbolic-ref", "refs/remotes/source/HEAD"], {
-      listeners: {
-        stdout: (data) => {
-          stdout += data.toString();
-        },
-      },
-    });
-  } catch (error) {
-    core.warning(`Could not determine default branch: ${error.message}`);
-    return null;
-  }
-
-  // Output format: "ref: refs/remotes/source/master"
-  const match = stdout.match(/refs\/remotes\/source\/(.+)$/);
-  if (match && match[1]) {
-    const defaultBranch = match[1].trim();
-    core.info(`Default branch detected: ${defaultBranch}`);
-    return defaultBranch;
-  }
-
-  return null;
-}
-
-/**
  * Helper: Try to find a fallback branch (main or master)
  */
 async function getTryFallbackBranch(availableBranches) {
