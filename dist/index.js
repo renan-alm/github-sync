@@ -41792,6 +41792,7 @@ function validateRepoAuth(repoName, repoUrl, hasSSHAuth, hasTokenAuth) {
  * @param {string} inputs.sourceRepo - Source repository URL
  * @param {string} inputs.destinationRepo - Destination repository URL
  * @param {string} inputs.githubToken - GitHub token (if provided)
+ * @param {string} inputs.destinationToken - Destination-specific token (if provided)
  * @param {string} inputs.githubAppId - GitHub App ID (if provided)
  * @param {string} inputs.githubAppPrivateKey - GitHub App private key (if provided)
  * @param {string} inputs.githubAppInstallationId - GitHub App installation ID (if provided)
@@ -41806,6 +41807,7 @@ function validateAuthentication(inputs) {
   // Determine what authentication is provided
   const hasTokenAuth =
     !!inputs.githubToken ||
+    !!inputs.destinationToken ||
     (inputs.githubAppId &&
       inputs.githubAppPrivateKey &&
       inputs.githubAppInstallationId);
@@ -41820,6 +41822,29 @@ function validateAuthentication(inputs) {
   lib_core.debug(`Destination repo protocol: ${destProtocol} (${inputs.destinationRepo})`);
   lib_core.debug(`Token auth available: ${hasTokenAuth}`);
   lib_core.debug(`SSH auth available: ${hasSSHAuth}`);
+
+  // Validate destination_token and source_token combination
+  if (inputs.destinationToken && !inputs.sourceToken) {
+    errors.push({
+      field: "source_token",
+      issue: "destination_token provided but source_token is missing",
+      current: "destination_token present, source_token missing",
+      missing: "source_token",
+      suggestion:
+        "When using separate tokens for source and destination, provide both source_token and destination_token",
+    });
+  }
+
+  if (inputs.sourceToken && !inputs.destinationToken) {
+    errors.push({
+      field: "destination_token",
+      issue: "source_token provided but destination_token is missing",
+      current: "source_token present, destination_token missing",
+      missing: "destination_token",
+      suggestion:
+        "When using separate tokens for source and destination, provide both source_token and destination_token",
+    });
+  }
 
   // Validate source repo
   errors.push(
@@ -42410,13 +42435,14 @@ function readInputs() {
     destinationRepo: lib_core.getInput("destination_repo", { required: true }),
     destinationBranch: lib_core.getInput("destination_branch", { required: true }),
     syncTags: lib_core.getInput("sync_tags"),
+    githubToken: lib_core.getInput("github_token"),
     sourceToken: lib_core.getInput("source_token"),
+    destinationToken: lib_core.getInput("destination_token"),
     syncAllBranches: lib_core.getInput("sync_all_branches") === "true",
     useMainAsFallback: lib_core.getInput("use_main_as_fallback") !== "false", // Default to true
     githubAppId: lib_core.getInput("github_app_id"),
     githubAppPrivateKey: lib_core.getInput("github_app_private_key"),
     githubAppInstallationId: lib_core.getInput("github_app_installation_id"),
-    githubToken: lib_core.getInput("github_token"),
     // SSH inputs
     sshKey: lib_core.getInput("ssh_key"),
     sshKeyPath: lib_core.getInput("ssh_key_path"),
@@ -42447,7 +42473,12 @@ async function authenticate(inputs) {
   }
 
   // Token-based authentication (HTTPS)
-  if (inputs.githubToken) {
+  // Priority: destination_token (if provided) > github_token > github_app > error
+  
+  if (inputs.destinationToken) {
+    lib_core.info("Using destination-specific Personal Access Token for HTTPS authentication...");
+    return inputs.destinationToken;
+  } else if (inputs.githubToken) {
     lib_core.info("Using GitHub Personal Access Token for HTTPS authentication...");
     return inputs.githubToken;
   } else if (

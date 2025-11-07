@@ -35,13 +35,14 @@ function readInputs() {
     destinationRepo: core.getInput("destination_repo", { required: true }),
     destinationBranch: core.getInput("destination_branch", { required: true }),
     syncTags: core.getInput("sync_tags"),
+    githubToken: core.getInput("github_token"),
     sourceToken: core.getInput("source_token"),
+    destinationToken: core.getInput("destination_token"),
     syncAllBranches: core.getInput("sync_all_branches") === "true",
     useMainAsFallback: core.getInput("use_main_as_fallback") !== "false", // Default to true
     githubAppId: core.getInput("github_app_id"),
     githubAppPrivateKey: core.getInput("github_app_private_key"),
     githubAppInstallationId: core.getInput("github_app_installation_id"),
-    githubToken: core.getInput("github_token"),
     // SSH inputs
     sshKey: core.getInput("ssh_key"),
     sshKeyPath: core.getInput("ssh_key_path"),
@@ -72,7 +73,12 @@ async function authenticate(inputs) {
   }
 
   // Token-based authentication (HTTPS)
-  if (inputs.githubToken) {
+  // Priority: destination_token (if provided) > github_token > github_app > error
+  
+  if (inputs.destinationToken) {
+    core.info("Using destination-specific Personal Access Token for HTTPS authentication...");
+    return inputs.destinationToken;
+  } else if (inputs.githubToken) {
     core.info("Using GitHub Personal Access Token for HTTPS authentication...");
     return inputs.githubToken;
   } else if (

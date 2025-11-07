@@ -105,6 +105,7 @@ function validateRepoAuth(repoName, repoUrl, hasSSHAuth, hasTokenAuth) {
  * @param {string} inputs.sourceRepo - Source repository URL
  * @param {string} inputs.destinationRepo - Destination repository URL
  * @param {string} inputs.githubToken - GitHub token (if provided)
+ * @param {string} inputs.destinationToken - Destination-specific token (if provided)
  * @param {string} inputs.githubAppId - GitHub App ID (if provided)
  * @param {string} inputs.githubAppPrivateKey - GitHub App private key (if provided)
  * @param {string} inputs.githubAppInstallationId - GitHub App installation ID (if provided)
@@ -119,6 +120,7 @@ export function validateAuthentication(inputs) {
   // Determine what authentication is provided
   const hasTokenAuth =
     !!inputs.githubToken ||
+    !!inputs.destinationToken ||
     (inputs.githubAppId &&
       inputs.githubAppPrivateKey &&
       inputs.githubAppInstallationId);
@@ -133,6 +135,29 @@ export function validateAuthentication(inputs) {
   core.debug(`Destination repo protocol: ${destProtocol} (${inputs.destinationRepo})`);
   core.debug(`Token auth available: ${hasTokenAuth}`);
   core.debug(`SSH auth available: ${hasSSHAuth}`);
+
+  // Validate destination_token and source_token combination
+  if (inputs.destinationToken && !inputs.sourceToken) {
+    errors.push({
+      field: "source_token",
+      issue: "destination_token provided but source_token is missing",
+      current: "destination_token present, source_token missing",
+      missing: "source_token",
+      suggestion:
+        "When using separate tokens for source and destination, provide both source_token and destination_token",
+    });
+  }
+
+  if (inputs.sourceToken && !inputs.destinationToken) {
+    errors.push({
+      field: "destination_token",
+      issue: "source_token provided but destination_token is missing",
+      current: "source_token present, destination_token missing",
+      missing: "destination_token",
+      suggestion:
+        "When using separate tokens for source and destination, provide both source_token and destination_token",
+    });
+  }
 
   // Validate source repo
   errors.push(

@@ -167,16 +167,23 @@ jobs:
 - `destination_repo` (required): Full repository URL for the destination repository
 - `destination_branch` (required): Branch name to sync to
 - `sync_tags` (optional): `true` to sync all tags, regex pattern to sync matching tags, or omit to skip
-- `source_token` (optional): Access token for private source repos (required for private HTTPS repos without embedded credentials)
+- `source_token` (optional): Access token for private source repos (required for private HTTPS repos without embedded credentials). When provided with `destination_token`, enables different tokens for source and destination repos.
+- `destination_token` (optional): Access token specifically for destination repo. When provided, `source_token` is required. Enables using different credentials for source and destination repositories.
 - `sync_all_branches` (optional): `true` to sync all branches from source repo
 - `use_main_as_fallback` (optional): `true` (default) to fallback to `main` or `master` if specified branch not found, `false` for strict branch matching
 
 **Authentication (provide one of the following):**
 
-- `github_token` (optional): GitHub Personal Access Token (PAT) for HTTPS authentication
+- `github_token` (optional): GitHub Personal Access Token (PAT) used for both source and destination HTTPS repos if separate tokens not provided
 - `github_app_id`, `github_app_private_key`, `github_app_installation_id` (optional): GitHub App for HTTPS authentication
 
-> **Note**: For HTTPS URLs, provide either a `github_token` OR all three GitHub App parameters. SSH URLs don't require authentication if SSH keys are configured. The token will also be used for source repos if no `source_token` is provided.
+**For Separate Tokens Per Repository:**
+
+- `source_token`: PAT for source repo
+- `destination_token`: PAT for destination repo
+- Both required when using separate tokens for different repositories
+
+> **Note**: For HTTPS URLs, provide either a `github_token` OR all three GitHub App parameters OR use `source_token`/`destination_token` pair for separate credentials. SSH URLs don't require authentication if SSH keys are configured.
 
 ### Workflow Considerations
 
@@ -362,6 +369,9 @@ jobs:
 ### Example 9: SSH with Encrypted Key
 
 ```yaml
+### Example 9: SSH with Encrypted Key
+
+```yaml
 - uses: renan-alm/github-repo-sync@v2
   with:
     source_repo: "git@github.com:owner/source.git"
@@ -370,4 +380,35 @@ jobs:
     destination_branch: "main"
     ssh_key: ${{ secrets.SSH_KEY }}
     ssh_passphrase: ${{ secrets.SSH_PASSPHRASE }}
+```
+
+### Example 10: Different tokens for source and destination
+
+Sync from one platform with one token to another platform with a different token:
+
+```yaml
+# Sync from GitHub to GitLab with separate credentials
+- uses: renan-alm/github-repo-sync@v2
+  with:
+    source_repo: "https://github.com/org/github-repo.git"
+    source_branch: "main"
+    source_token: ${{ secrets.GITHUB_TOKEN }}
+    
+    destination_repo: "https://gitlab.com/org/gitlab-repo.git"
+    destination_branch: "main"
+    destination_token: ${{ secrets.GITLAB_TOKEN }}
+    
+    sync_tags: "true"
+```
+
+**When to use separate tokens:**
+
+- Syncing between different Git platforms (GitHub ↔ GitLab, GitHub ↔ Gitea, etc.)
+- Source and destination repos owned by different organizations
+- Different permission levels needed for each repository
+- Cross-tenant or cross-account synchronization
+
+⚠️ **Note**: When using `source_token` and `destination_token`, provide both or provide neither. Mix `source_token`/`destination_token` with `github_token` is not supported.
+
+````
 ```

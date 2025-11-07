@@ -39,7 +39,10 @@ inputs:
     description: GitHub App installation ID (required if not using github_token)
     required: false
   github_token:
-    description: GitHub Personal Access Token (required if not using GitHub App)
+    description: "GitHub Personal Access Token for destination repo. Used for both source and destination if source_token not provided. Alternative to github_app_*"
+    required: false
+  destination_token:
+    description: "GitHub Personal Access Token (PAT) for destination repo authentication. Use when destination uses HTTPS and different token than github_token. If source_token is provided, destination_token is required"
     required: false
   ssh_key:
     description: SSH private key content for SSH-based authentication. Can be raw key, escaped key (\\n), or base64 encoded
