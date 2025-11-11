@@ -137,10 +137,13 @@ export async function isSourceAheadOfDestination(destRef, sourceRef) {
     return false; // Return false to trigger force push in caller
   }
 
-  // Check if destination is the merge base (meaning source is ahead)
-  const isAhead = mergeBase === destCommit;
+  // Check if source is ahead of destination
+  // Source is ahead if:
+  // 1. Destination is the merge base (destination is ancestor of source)
+  // 2. Source commit is different from destination commit (source has new commits)
+  const isAhead = mergeBase === destCommit && sourceCommit !== destCommit;
   core.debug(
-    `Branch comparison: merge-base=${mergeBase.substring(0, 7)}, dest=${destCommit.substring(0, 7)}, source-ahead=${isAhead}`,
+    `Branch comparison: merge-base=${mergeBase.substring(0, 7)}, dest=${destCommit.substring(0, 7)}, source=${sourceCommit.substring(0, 7)}, source-ahead=${isAhead}`,
   );
   return isAhead;
 }
