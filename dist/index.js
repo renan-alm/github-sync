@@ -42756,7 +42756,221 @@ async function setupSSHAuthentication(sshConfig, hostsToValidate = ["github.com"
   }
 }
 
+;// CONCATENATED MODULE: ./src/lightweight-sync.js
+
+
+
+/**
+ * Lightweight sync for large repositories
+ * Uses the source remote that's already configured
+ * Much faster for large repositories since it doesn't need full git history.
+ * Approach: Fetch from source remote and force push to destination
+ */
+async function syncBranchesLightweight(
+  sourceBranch,
+  destinationBranch,
+  syncAllBranches,
+) {
+  lib_core.info("=== Starting Lightweight Sync (Large Repository Mode) ===");
+  lib_core.info(
+    `Using lightweight approach - optimized for large repositories`,
+  );
+
+  if (syncAllBranches) {
+    lib_core.info("=== Syncing All Branches (Lightweight) ===");
+
+    // Get all source branches
+    let sourceBranchesOutput = "";
+    await exec.exec("git", ["branch", "-r", "--list", "source/*"], {
+      listeners: {
+        stdout: (data) => {
+          sourceBranchesOutput += data.toString();
+        },
+      },
+    });
+
+    const sourceBranches = sourceBranchesOutput
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.includes("HEAD"))
+      .map((line) => line.replace("source/", ""));
+
+    lib_core.info(`Found ${sourceBranches.length} source branches`);
+
+    // Create branch mapping: source_branch → destination_branch, others keep same name
+    const branchMapping = {};
+    for (const branch of sourceBranches) {
+      branchMapping[branch] =
+        branch === sourceBranch ? destinationBranch : branch;
+    }
+
+    lib_core.info(`Branch mapping: ${JSON.stringify(branchMapping)}`);
+
+    // Push all branches
+    for (const sourceBranchName of sourceBranches) {
+      const destBranchName = branchMapping[sourceBranchName];
+      lib_core.info(`Pushing: ${sourceBranchName} → ${destBranchName}`);
+
+      try {
+        await exec.exec("git", [
+          "push",
+          "origin",
+          `refs/remotes/source/${sourceBranchName}:refs/heads/${destBranchName}`,
+          "--force",
+        ]);
+        lib_core.info(`✓ Branch pushed: ${sourceBranchName} → ${destBranchName}`);
+      } catch (error) {
+        lib_core.error(
+          `Failed to push ${sourceBranchName} → ${destBranchName}: ${error.message}`,
+        );
+        throw error;
+      }
+    }
+  } else {
+    lib_core.info(`=== Syncing Single Branch (Lightweight) ===`);
+    lib_core.info(`Pushing: ${sourceBranch} → ${destinationBranch}`);
+
+    try {
+      await exec.exec("git", [
+        "push",
+        "origin",
+        `refs/remotes/source/${sourceBranch}:refs/heads/${destinationBranch}`,
+        "--force",
+      ]);
+      lib_core.info(
+        `✓ Branch pushed: ${sourceBranch} → ${destinationBranch}`,
+      );
+    } catch (error) {
+      lib_core.error(
+        `Failed to push ${sourceBranch} → ${destinationBranch}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+}
+
+/**
+ * Lightweight tag sync for large repositories
+ * Uses direct git tag commands for efficiency
+ * Fetches tags from source and pushes to destination with --force
+ */
+async function syncTagsLightweight(syncTags) {
+  if (syncTags === "true") {
+    lib_core.info("=== Syncing All Tags (Lightweight) ===");
+
+    try {
+      // Delete all local tags to ensure clean state (matching inspiration.sh behavior)
+      lib_core.info("Cleaning up local tags...");
+      let tagsOutput = "";
+      await exec.exec("git", ["tag", "-l"], {
+        listeners: {
+          stdout: (data) => {
+            tagsOutput += data.toString();
+          },
+        },
+      });
+      
+      if (tagsOutput.trim()) {
+        const tags = tagsOutput.split(/\r?\n/).filter((tag) => tag.trim());
+        for (const tag of tags) {
+          if (tag) {
+            await exec.exec("git", ["tag", "-d", tag], {
+              silent: true,
+            });
+          }
+        }
+        lib_core.info(`✓ Deleted ${tags.length} local tags`);
+      }
+
+      // Fetch all tags from source
+      lib_core.info("Fetching tags from source...");
+      await exec.exec("git", ["fetch", "source", "--tags", "--quiet"]);
+
+      // Push all tags to destination
+      lib_core.info("Pushing all tags to destination...");
+      await exec.exec("git", ["push", "origin", "--tags", "--force"]);
+      lib_core.info("✓ All tags synced");
+    } catch (error) {
+      lib_core.error(`Failed to sync tags: ${error.message}`);
+      throw error;
+    }
+  } else if (syncTags) {
+    lib_core.info("=== Syncing Tags Matching Pattern (Lightweight) ===");
+    lib_core.info(`Pattern: ${syncTags}`);
+
+    try {
+      // Delete all local tags to ensure clean state (matching inspiration.sh behavior)
+      lib_core.info("Cleaning up local tags...");
+      let tagsOutput = "";
+      await exec.exec("git", ["tag", "-l"], {
+        listeners: {
+          stdout: (data) => {
+            tagsOutput += data.toString();
+          },
+        },
+      });
+      
+      if (tagsOutput.trim()) {
+        const tags = tagsOutput.split(/\r?\n/).filter((tag) => tag.trim());
+        for (const tag of tags) {
+          if (tag) {
+            await exec.exec("git", ["tag", "-d", tag], {
+              silent: true,
+            });
+          }
+        }
+        lib_core.info(`✓ Deleted ${tags.length} local tags`);
+      }
+
+      // Fetch all tags
+      lib_core.info("Fetching tags from source...");
+      await exec.exec("git", ["fetch", "source", "--tags", "--quiet"]);
+
+      // Get all tags
+      let allTagsOutput = "";
+      await exec.exec("git", ["tag"], {
+        listeners: {
+          stdout: (data) => {
+            allTagsOutput += data.toString();
+          },
+        },
+      });
+
+      const allTags = allTagsOutput
+        .split(/\r?\n/)
+        .filter((tag) => tag.trim());
+      const matchingTags = allTags.filter((tag) => tag.match(syncTags));
+
+      lib_core.info(`Found ${matchingTags.length} matching tags`);
+
+      // Push matching tags
+      for (const tag of matchingTags) {
+        if (tag) {
+          try {
+            lib_core.info(`Pushing tag: ${tag}`);
+            await exec.exec("git", [
+              "push",
+              "origin",
+              `refs/tags/${tag}:refs/tags/${tag}`,
+              "--force",
+            ]);
+            lib_core.info(`✓ Tag pushed: ${tag}`);
+          } catch (error) {
+            lib_core.warning(`Failed to push tag ${tag}: ${error.message}`);
+          }
+        }
+      }
+    } catch (error) {
+      lib_core.error(`Failed to sync tags: ${error.message}`);
+      throw error;
+    }
+  } else {
+    lib_core.info("Tag syncing disabled");
+  }
+}
+
 ;// CONCATENATED MODULE: ./src/index.js
+
 
 
 
@@ -42789,6 +43003,7 @@ function readInputs() {
     githubAppId: lib_core.getInput("github_app_id"),
     githubAppPrivateKey: lib_core.getInput("github_app_private_key"),
     githubAppInstallationId: lib_core.getInput("github_app_installation_id"),
+    useLightweightSync: lib_core.getInput("use_lightweight_sync") === "true",
     // SSH inputs
     sshKey: lib_core.getInput("ssh_key"),
     sshKeyPath: lib_core.getInput("ssh_key_path"),
@@ -43539,8 +43754,19 @@ async function run() {
 
     await setupSourceRemote(srcUrl);
 
-    // Use Gerrit-specific or standard sync based on detection
-    if (isDestinationGerrit) {
+    // Choose sync strategy
+    if (inputs.useLightweightSync) {
+      lib_core.info("Using lightweight sync mode (optimized for large repositories)");
+      // Lightweight sync doesn't cd into a repo directory
+      // It works on the current directory with temporary remotes
+      await syncBranchesLightweight(
+        inputs.sourceBranch,
+        inputs.destinationBranch,
+        inputs.syncAllBranches,
+      );
+      await syncTagsLightweight(inputs.syncTags);
+    } else if (isDestinationGerrit) {
+      // Use Gerrit-specific or standard sync based on detection
       logGerritInfo(inputs.sourceRepo, inputs.destinationRepo);
       await syncBranchesGerrit(
         inputs.sourceBranch,

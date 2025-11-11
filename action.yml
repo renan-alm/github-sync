@@ -59,6 +59,9 @@ inputs:
   ssh_strict_host_key_checking:
     description: Enable strict SSH host key checking (default true)
     required: false
+  use_lightweight_sync:
+    description: Use lightweight sync for large repositories (faster, uses temporary remote instead of clone)
+    required: false
 runs:
   using: "node20"
   main: "dist/index.js"
