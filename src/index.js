@@ -17,6 +17,10 @@ import {
   detectAuthenticationMethods,
   setupSSHAuthentication,
 } from "./ssh-auth.js";
+import {
+  syncBranchesLightweight,
+  syncTagsLightweight,
+} from "./lightweight-sync.js";
 
 async function getAppInstallationToken(appId, privateKey, installationId) {
   const auth = createAppAuth({
@@ -43,6 +47,7 @@ function readInputs() {
     githubAppId: core.getInput("github_app_id"),
     githubAppPrivateKey: core.getInput("github_app_private_key"),
     githubAppInstallationId: core.getInput("github_app_installation_id"),
+    useLightweightSync: core.getInput("use_lightweight_sync") === "true",
     // SSH inputs
     sshKey: core.getInput("ssh_key"),
     sshKeyPath: core.getInput("ssh_key_path"),
@@ -793,8 +798,19 @@ async function run() {
 
     await setupSourceRemote(srcUrl);
 
-    // Use Gerrit-specific or standard sync based on detection
-    if (isDestinationGerrit) {
+    // Choose sync strategy
+    if (inputs.useLightweightSync) {
+      core.info("Using lightweight sync mode (optimized for large repositories)");
+      // Lightweight sync doesn't cd into a repo directory
+      // It works on the current directory with temporary remotes
+      await syncBranchesLightweight(
+        inputs.sourceBranch,
+        inputs.destinationBranch,
+        inputs.syncAllBranches,
+      );
+      await syncTagsLightweight(inputs.syncTags);
+    } else if (isDestinationGerrit) {
+      // Use Gerrit-specific or standard sync based on detection
       logGerritInfo(inputs.sourceRepo, inputs.destinationRepo);
       await syncBranchesGerrit(
         inputs.sourceBranch,

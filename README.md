@@ -191,6 +191,7 @@ jobs:
 - `source_token` (optional): Access token for private source repos (required for private HTTPS repos without embedded credentials). When provided with `destination_token`, enables different tokens for source and destination repos.
 - `destination_token` (optional): Access token specifically for destination repo. When provided, `source_token` is required. Enables using different credentials for source and destination repositories.
 - `sync_all_branches` (optional): `true` to sync all branches from source repo
+- `use_lightweight_sync` (optional): `true` to use lightweight sync mode optimized for large repositories (faster, uses force push without incremental logic). Default: `false`
 - `use_main_as_fallback` (optional): `true` (default) to fallback to `main` or `master` if specified branch not found, `false` for strict branch matching
 
 **Authentication (provide one of the following):**
@@ -205,6 +206,59 @@ jobs:
 - Both required when using separate tokens for different repositories
 
 > **Note**: For HTTPS URLs, provide either a `github_token` OR all three GitHub App parameters OR use `source_token`/`destination_token` pair for separate credentials. SSH URLs don't require authentication if SSH keys are configured.
+
+### Lightweight Sync Mode
+
+For repositories with large histories or when you need faster synchronization, use **lightweight sync mode** by setting `use_lightweight_sync: "true"`. This mode optimizes performance for large repositories by:
+
+- **Skipping incremental logic**: Uses direct force push instead of analyzing commits
+- **Faster performance**: Ideal for repositories with extensive history or large file sizes
+- **Optimized for clones**: Better suited for initial syncs or full repository mirrors
+- **No history analysis**: Doesn't check if source is ahead or behind, simply force pushes all changes
+
+#### When to Use Lightweight Sync
+
+- **Large repositories** (>1GB or deep history): Significantly faster than standard sync
+- **Initial mirror setup**: Perfect for cloning entire repositories
+- **Periodic backups**: When you just need a quick mirror without incremental checks
+- **Network-constrained environments**: Reduces unnecessary git operations
+
+#### Standard vs Lightweight Sync
+
+| Aspect | Standard Sync | Lightweight Sync |
+|--------|---------------|-----------------|
+| **Performance** | Analyzes commits to sync only new changes | Direct force push, no analysis |
+| **Best For** | Regular incremental updates | Large repos or initial setup |
+| **History Check** | Compares commit trees | N/A (force pushes all refs) |
+| **Repository Size** | Good for any size | Optimized for large repos |
+| **Speed** | Slower on large repos | Significantly faster |
+
+#### Example: Lightweight Sync for Large Repository
+
+```yaml
+- uses: renan-alm/github-repo-sync@v2
+  with:
+    source_repo: "https://github.com/org/huge-repo.git"
+    source_branch: "main"
+    destination_repo: "https://github.com/org/mirror-repo.git"
+    destination_branch: "main"
+    use_lightweight_sync: "true"  # Enable lightweight mode
+    sync_tags: "true"
+    github_token: ${{ secrets.PAT }}
+```
+
+#### Example: Lightweight Sync with All Branches
+
+```yaml
+- uses: renan-alm/github-repo-sync@v2
+  with:
+    source_repo: "https://github.com/org/large-repo.git"
+    destination_repo: "https://github.com/org/destination-repo.git"
+    use_lightweight_sync: "true"
+    sync_all_branches: "true"
+    sync_tags: "true"
+    github_token: ${{ secrets.PAT }}
+```
 
 ### Workflow Considerations
 
