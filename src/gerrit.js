@@ -88,23 +88,26 @@ async function getRefCommitGerrit(ref) {
  * @returns {Promise<object>} Object with { isModified: boolean, details: string }
  */
 async function hasDestinationBeenModifiedGerrit(destRef, sourceRef) {
-  const mergeBase = await getMergeBaseGerrit(destRef, sourceRef);
-  if (!mergeBase) {
-    core.debug("No common history found between branches");
-    return { isModified: false, details: "No common history" };
-  }
-
+  // FIRST: Check if destination and source refs exist (before merge-base to avoid errors)
   const sourceCommit = await getRefCommitGerrit(sourceRef);
   const destCommit = await getRefCommitGerrit(destRef);
 
   if (!destCommit) {
-    // Destination doesn't exist yet, not modified
+    // Destination branch doesn't exist yet, not modified
+    // This is safe to push to (new branch or empty repo)
     return { isModified: false, details: "Destination branch does not exist" };
   }
 
   if (!sourceCommit) {
     // Source doesn't exist, can't compare
     return { isModified: false, details: "Source branch does not exist" };
+  }
+
+  // SECOND: Both exist, now find merge-base to detect divergence
+  const mergeBase = await getMergeBaseGerrit(destRef, sourceRef);
+  if (!mergeBase) {
+    core.debug("No common history found between branches");
+    return { isModified: false, details: "No common history" };
   }
 
   // Check if destination has commits that source doesn't have
