@@ -184,21 +184,31 @@ export async function syncBranchesGerrit(
   if (syncAllBranches) {
     core.info("=== Syncing All Branches to Gerrit (Review Queue) ===");
 
-    const branchNames = await getSourceBranchesGerrit();
-    core.info(`Found ${branchNames.length} branches to sync`);
+    const sourceBranchNames = await getSourceBranchesGerrit();
+    core.info(`Found ${sourceBranchNames.length} branches to sync`);
 
-    for (const branch of branchNames) {
-      core.info(`Syncing branch to Gerrit: ${branch}`);
+    // Create branch mapping: by default, branch names stay the same
+    // But the specified source_branch maps to destination_branch
+    const branchMapping = {};
+    for (const branch of sourceBranchNames) {
+      branchMapping[branch] = (branch === sourceBranch) ? destinationBranch : branch;
+    }
+    
+    core.info(`Branch mapping: ${JSON.stringify(branchMapping)}`);
+
+    for (const sourceBranchName of sourceBranchNames) {
+      const destBranchName = branchMapping[sourceBranchName];
+      core.info(`Syncing branch to Gerrit: ${sourceBranchName} → ${destBranchName}`);
       try {
-        const destRef = `origin/${branch}`;
-        const sourceRef = `source/${branch}`;
+        const destRef = `origin/${destBranchName}`;
+        const sourceRef = `source/${sourceBranchName}`;
 
         // FIRST: Check if destination has been modified
         const modCheck = await hasDestinationBeenModifiedGerrit(destRef, sourceRef);
         if (modCheck.isModified) {
           const destCommit = await getRefCommitGerrit(destRef);
           core.error(
-            `❌ SYNC BLOCKED: Destination branch "${branch}" has been modified since last sync.`,
+            `❌ SYNC BLOCKED: Destination branch "${destBranchName}" has been modified since last sync.`,
           );
           core.error(
             `   The destination contains commits that don't exist in the source.`,
@@ -208,7 +218,7 @@ export async function syncBranchesGerrit(
             `   To resolve this, manually merge or rebase the destination changes.`,
           );
           throw new Error(
-            `Destination branch "${branch}" has been modified. Manual intervention required.`,
+            `Destination branch "${destBranchName}" has been modified. Manual intervention required.`,
           );
         }
 
@@ -223,32 +233,40 @@ export async function syncBranchesGerrit(
           await exec.exec("git", [
             "push",
             "origin",
-            `refs/remotes/source/${branch}:refs/for/${branch}`,
+            `refs/remotes/source/${sourceBranchName}:refs/for/${destBranchName}`,
           ]);
-          core.info(`✓ Branch synced to Gerrit review queue: ${branch}`);
+          core.info(`✓ Branch synced to Gerrit review queue: ${sourceBranchName} → ${destBranchName}`);
         } else {
-          // Destination doesn't exist yet (new branch)
+          // Destination doesn't exist yet (new branch) OR
+          // Destination exists but has no common history with source (e.g., master → main rename)
           const destCommit = await getRefCommitGerrit(destRef);
           if (!destCommit) {
             // New branch, safe to push with force
-            core.info(`${branch} is a new branch, pushing to Gerrit with force...`);
+            core.info(`${destBranchName} is a new branch, pushing to Gerrit with force...`);
             await exec.exec("git", [
               "push",
               "origin",
-              `refs/remotes/source/${branch}:refs/for/${branch}`,
+              `refs/remotes/source/${sourceBranchName}:refs/for/${destBranchName}`,
               "--force",
             ]);
-            core.info(`✓ Branch synced to Gerrit review queue: ${branch}`);
+            core.info(`✓ Branch synced to Gerrit review queue: ${sourceBranchName} → ${destBranchName}`);
           } else {
-            // This should not happen given we checked for modification above
-            core.error(
-              `Unexpected state: destination exists but is not ahead. This should have been caught earlier.`,
+            // Destination exists but has no common history - this can happen with branch renames
+            // Safe to force push since we already verified the destination hasn't been modified
+            core.info(
+              `Destination branch has no common history with source, pushing to Gerrit with force...`,
             );
-            throw new Error(`Unexpected sync state for branch "${branch}"`);
+            await exec.exec("git", [
+              "push",
+              "origin",
+              `refs/remotes/source/${sourceBranchName}:refs/for/${destBranchName}`,
+              "--force",
+            ]);
+            core.info(`✓ Branch synced to Gerrit review queue: ${sourceBranchName} → ${destBranchName}`);
           }
         }
       } catch (error) {
-        core.error(`❌ Failed to sync ${branch}: ${error.message}`);
+        core.error(`❌ Failed to sync ${sourceBranchName} → ${destBranchName}: ${error.message}`);
         throw error; // Fail the entire action on first branch error
       }
     }

@@ -41635,21 +41635,31 @@ async function syncBranchesGerrit(
   if (syncAllBranches) {
     lib_core.info("=== Syncing All Branches to Gerrit (Review Queue) ===");
 
-    const branchNames = await getSourceBranchesGerrit();
-    lib_core.info(`Found ${branchNames.length} branches to sync`);
+    const sourceBranchNames = await getSourceBranchesGerrit();
+    lib_core.info(`Found ${sourceBranchNames.length} branches to sync`);
 
-    for (const branch of branchNames) {
-      lib_core.info(`Syncing branch to Gerrit: ${branch}`);
+    // Create branch mapping: by default, branch names stay the same
+    // But the specified source_branch maps to destination_branch
+    const branchMapping = {};
+    for (const branch of sourceBranchNames) {
+      branchMapping[branch] = (branch === sourceBranch) ? destinationBranch : branch;
+    }
+    
+    lib_core.info(`Branch mapping: ${JSON.stringify(branchMapping)}`);
+
+    for (const sourceBranchName of sourceBranchNames) {
+      const destBranchName = branchMapping[sourceBranchName];
+      lib_core.info(`Syncing branch to Gerrit: ${sourceBranchName} → ${destBranchName}`);
       try {
-        const destRef = `origin/${branch}`;
-        const sourceRef = `source/${branch}`;
+        const destRef = `origin/${destBranchName}`;
+        const sourceRef = `source/${sourceBranchName}`;
 
         // FIRST: Check if destination has been modified
         const modCheck = await hasDestinationBeenModifiedGerrit(destRef, sourceRef);
         if (modCheck.isModified) {
           const destCommit = await getRefCommitGerrit(destRef);
           lib_core.error(
-            `❌ SYNC BLOCKED: Destination branch "${branch}" has been modified since last sync.`,
+            `❌ SYNC BLOCKED: Destination branch "${destBranchName}" has been modified since last sync.`,
           );
           lib_core.error(
             `   The destination contains commits that don't exist in the source.`,
@@ -41659,7 +41669,7 @@ async function syncBranchesGerrit(
             `   To resolve this, manually merge or rebase the destination changes.`,
           );
           throw new Error(
-            `Destination branch "${branch}" has been modified. Manual intervention required.`,
+            `Destination branch "${destBranchName}" has been modified. Manual intervention required.`,
           );
         }
 
@@ -41674,32 +41684,40 @@ async function syncBranchesGerrit(
           await exec.exec("git", [
             "push",
             "origin",
-            `refs/remotes/source/${branch}:refs/for/${branch}`,
+            `refs/remotes/source/${sourceBranchName}:refs/for/${destBranchName}`,
           ]);
-          lib_core.info(`✓ Branch synced to Gerrit review queue: ${branch}`);
+          lib_core.info(`✓ Branch synced to Gerrit review queue: ${sourceBranchName} → ${destBranchName}`);
         } else {
-          // Destination doesn't exist yet (new branch)
+          // Destination doesn't exist yet (new branch) OR
+          // Destination exists but has no common history with source (e.g., master → main rename)
           const destCommit = await getRefCommitGerrit(destRef);
           if (!destCommit) {
             // New branch, safe to push with force
-            lib_core.info(`${branch} is a new branch, pushing to Gerrit with force...`);
+            lib_core.info(`${destBranchName} is a new branch, pushing to Gerrit with force...`);
             await exec.exec("git", [
               "push",
               "origin",
-              `refs/remotes/source/${branch}:refs/for/${branch}`,
+              `refs/remotes/source/${sourceBranchName}:refs/for/${destBranchName}`,
               "--force",
             ]);
-            lib_core.info(`✓ Branch synced to Gerrit review queue: ${branch}`);
+            lib_core.info(`✓ Branch synced to Gerrit review queue: ${sourceBranchName} → ${destBranchName}`);
           } else {
-            // This should not happen given we checked for modification above
-            lib_core.error(
-              `Unexpected state: destination exists but is not ahead. This should have been caught earlier.`,
+            // Destination exists but has no common history - this can happen with branch renames
+            // Safe to force push since we already verified the destination hasn't been modified
+            lib_core.info(
+              `Destination branch has no common history with source, pushing to Gerrit with force...`,
             );
-            throw new Error(`Unexpected sync state for branch "${branch}"`);
+            await exec.exec("git", [
+              "push",
+              "origin",
+              `refs/remotes/source/${sourceBranchName}:refs/for/${destBranchName}`,
+              "--force",
+            ]);
+            lib_core.info(`✓ Branch synced to Gerrit review queue: ${sourceBranchName} → ${destBranchName}`);
           }
         }
       } catch (error) {
-        lib_core.error(`❌ Failed to sync ${branch}: ${error.message}`);
+        lib_core.error(`❌ Failed to sync ${sourceBranchName} → ${destBranchName}: ${error.message}`);
         throw error; // Fail the entire action on first branch error
       }
     }
@@ -43117,22 +43135,36 @@ async function hasDestinationBeenModified(destRef, sourceRef) {
  * @returns {Promise<boolean>} True if safe to push without force
  */
 async function isSourceAheadOfDestination(destRef, sourceRef) {
-  const mergeBase = await getMergeBase(destRef, sourceRef);
-  if (!mergeBase) {
-    lib_core.debug("No common history found between branches");
-    return false;
-  }
-
   const destCommit = await getRefCommit(destRef);
   if (!destCommit) {
     lib_core.debug(`Destination ref ${destRef} does not exist`);
     return true; // New branch, can push
   }
 
-  // Check if destination is the merge base (meaning source is ahead)
-  const isAhead = mergeBase === destCommit;
+  const sourceCommit = await getRefCommit(sourceRef);
+  if (!sourceCommit) {
+    lib_core.debug(`Source ref ${sourceRef} does not exist`);
+    return false; // Source doesn't exist, nothing to push
+  }
+
+  const mergeBase = await getMergeBase(destRef, sourceRef);
+  if (!mergeBase) {
+    // No common history - branches are completely independent
+    // This can happen when destination branch was created independently (e.g., with initial README)
+    // In this case, we need force push to replace it
+    lib_core.debug(
+      `No common history between ${destRef} and ${sourceRef}. Will need force push.`,
+    );
+    return false; // Return false to trigger force push in caller
+  }
+
+  // Check if source is ahead of destination
+  // Source is ahead if:
+  // 1. Destination is the merge base (destination is ancestor of source)
+  // 2. Source commit is different from destination commit (source has new commits)
+  const isAhead = mergeBase === destCommit && sourceCommit !== destCommit;
   lib_core.debug(
-    `Branch comparison: merge-base=${mergeBase.substring(0, 7)}, dest=${destCommit.substring(0, 7)}, source-ahead=${isAhead}`,
+    `Branch comparison: merge-base=${mergeBase.substring(0, 7)}, dest=${destCommit.substring(0, 7)}, source=${sourceCommit.substring(0, 7)}, source-ahead=${isAhead}`,
   );
   return isAhead;
 }
@@ -43148,6 +43180,15 @@ async function syncBranches(
 
     const sourceBranchNames = await getSourceBranches();
     lib_core.info(`Found ${sourceBranchNames.length} branches in source to sync`);
+
+    // Create branch mapping: by default, branch names stay the same
+    // But the specified source_branch maps to destination_branch
+    const branchMapping = {};
+    for (const branch of sourceBranchNames) {
+      branchMapping[branch] = (branch === sourceBranch) ? destinationBranch : branch;
+    }
+    
+    lib_core.info(`Branch mapping: ${JSON.stringify(branchMapping)}`);
 
     // Get all destination branches (excluding HEAD)
     let stdout = "";
@@ -43167,9 +43208,12 @@ async function syncBranches(
 
     lib_core.info(`Found ${destinationBranches.length} branches in destination`);
 
+    // Build list of expected destination branches based on mapping
+    const expectedDestinationBranches = Object.values(branchMapping);
+    
     // Delete destination branches that don't exist in source
     const branchesToDelete = destinationBranches.filter(
-      (branch) => !sourceBranchNames.includes(branch),
+      (branch) => !expectedDestinationBranches.includes(branch),
     );
 
     if (branchesToDelete.length > 0) {
@@ -43187,19 +43231,20 @@ async function syncBranches(
       lib_core.info("No destination-only branches to delete");
     }
 
-    // Push all source branches to destination
-    for (const branch of sourceBranchNames) {
-      lib_core.info(`Syncing branch: ${branch}`);
+    // Push all source branches to destination (using the mapping)
+    for (const sourceBranchName of sourceBranchNames) {
+      const destBranchName = branchMapping[sourceBranchName];
+      lib_core.info(`Syncing branch: ${sourceBranchName} → ${destBranchName}`);
 
-      const destRef = `origin/${branch}`;
-      const sourceRef = `source/${branch}`;
+      const destRef = `origin/${destBranchName}`;
+      const sourceRef = `source/${sourceBranchName}`;
 
       // FIRST: Check if destination has been modified
       const modCheck = await hasDestinationBeenModified(destRef, sourceRef);
       if (modCheck.isModified) {
         const destCommit = await getRefCommit(destRef);
         lib_core.error(
-          `❌ SYNC BLOCKED: Destination branch "${branch}" has been modified since last sync.`,
+          `❌ SYNC BLOCKED: Destination branch "${destBranchName}" has been modified since last sync.`,
         );
         lib_core.error(
           `   The destination contains commits that don't exist in the source.`,
@@ -43209,7 +43254,7 @@ async function syncBranches(
           `   To resolve this, manually merge or rebase the destination changes.`,
         );
         throw new Error(
-          `Destination branch "${branch}" has been modified. Manual intervention required.`,
+          `Destination branch "${destBranchName}" has been modified. Manual intervention required.`,
         );
       }
 
@@ -43223,11 +43268,11 @@ async function syncBranches(
           await exec.exec("git", [
             "push",
             "origin",
-            `refs/remotes/source/${branch}:refs/heads/${branch}`,
+            `refs/remotes/source/${sourceBranchName}:refs/heads/${destBranchName}`,
           ]);
-          lib_core.info(`✓ Branch synced: ${branch}`);
+          lib_core.info(`✓ Branch synced: ${sourceBranchName} → ${destBranchName}`);
         } catch (error) {
-          lib_core.error(`Failed to push ${branch}: ${error.message}`);
+          lib_core.error(`Failed to push ${sourceBranchName} → ${destBranchName}: ${error.message}`);
           throw error;
         }
       } else {
@@ -43235,14 +43280,14 @@ async function syncBranches(
         // Destination exists but has no common history with source (e.g., master → main rename)
         const destCommit = await getRefCommit(destRef);
         if (!destCommit) {
-          lib_core.info(`${branch} is a new branch, pushing with force...`);
+          lib_core.info(`${destBranchName} is a new branch, pushing with force...`);
           await exec.exec("git", [
             "push",
             "origin",
-            `refs/remotes/source/${branch}:refs/heads/${branch}`,
+            `refs/remotes/source/${sourceBranchName}:refs/heads/${destBranchName}`,
             "--force",
           ]);
-          lib_core.info(`✓ Branch synced: ${branch}`);
+          lib_core.info(`✓ Branch synced: ${sourceBranchName} → ${destBranchName}`);
         } else {
           // Destination exists but has no common history - this can happen with branch renames
           // Safe to force push since we already verified the destination hasn't been modified
@@ -43252,10 +43297,10 @@ async function syncBranches(
           await exec.exec("git", [
             "push",
             "origin",
-            `refs/remotes/source/${branch}:refs/heads/${branch}`,
+            `refs/remotes/source/${sourceBranchName}:refs/heads/${destBranchName}`,
             "--force",
           ]);
-          lib_core.info(`✓ Branch synced: ${branch}`);
+          lib_core.info(`✓ Branch synced: ${sourceBranchName} → ${destBranchName}`);
         }
       }
     }
