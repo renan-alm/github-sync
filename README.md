@@ -165,7 +165,7 @@ jobs:
         with:
           persist-credentials: false
       - name: repo-sync
-        uses: repo-sync/github-sync@v2
+        uses: renan-alm/github-repo-sync
         with:
           source_repo: "https://github.com/owner/source-repo.git"
           source_branch: "main"
